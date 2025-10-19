@@ -3,7 +3,7 @@ Main Window for eBay Reseller Manager
 FIXED VERSION - Added missing Pricing Tab
 """
 from PyQt6.QtWidgets import (QMainWindow, QTabWidget, QWidget, QVBoxLayout, 
-                             QLabel, QStatusBar, QMessageBox, QApplication)
+                             QLabel, QStatusBar, QMessageBox, QApplication, QDialog)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
 import sys
@@ -16,6 +16,7 @@ from gui.expenses_tab import ExpensesTab
 from gui.pricing_tab import PricingTab  # FIXED: Added missing import
 from gui.sold_items_tab import SoldItemsTab
 from gui.reports_tab import ReportsTab
+from gui.draft_listings_tab import DraftListingsTab
 
 
 class MainWindow(QMainWindow):
@@ -29,6 +30,26 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("eBay Reseller Manager")
         self.setGeometry(100, 100, 1200, 800)  # Reasonable size, not huge
         self.setMinimumSize(1000, 700)
+        
+        # Create menu bar
+        menubar = self.menuBar()
+        
+        # File menu
+        file_menu = menubar.addMenu("File")
+        
+        settings_action = file_menu.addAction("⚙️ Settings")
+        settings_action.triggered.connect(self.open_settings)
+        
+        file_menu.addSeparator()
+        
+        exit_action = file_menu.addAction("Exit")
+        exit_action.triggered.connect(self.close)
+        
+        # Help menu
+        help_menu = menubar.addMenu("Help")
+        
+        about_action = help_menu.addAction("About")
+        about_action.triggered.connect(self.show_about)
         
         # Create central widget and layout
         central_widget = QWidget()
@@ -76,12 +97,19 @@ class MainWindow(QMainWindow):
             print(f"Error creating Reports tab: {e}")
             self.reports_tab = QWidget()
         
+        try:
+            self.draft_listings_tab = DraftListingsTab(self.db)
+        except Exception as e:
+            print(f"Error creating Draft Listings tab: {e}")
+            self.draft_listings_tab = QWidget()
+        
         # Add tabs
         self.tabs.addTab(self.dashboard_tab, "📊 Dashboard")
         self.tabs.addTab(self.inventory_tab, "📦 Inventory")
         self.tabs.addTab(self.expenses_tab, "💵 Expenses")
         self.tabs.addTab(self.pricing_tab, "🏷️ Price Calculator")  # FIXED: Added missing tab
         self.tabs.addTab(self.sold_items_tab, "💰 Sold Items")
+        self.tabs.addTab(self.draft_listings_tab, "📝 Draft Listings")
         self.tabs.addTab(self.reports_tab, "📈 Reports")
         
         # Connect tab change signal to refresh data
@@ -265,6 +293,11 @@ class MainWindow(QMainWindow):
             elif isinstance(current_tab, ReportsTab):
                 if hasattr(current_tab, 'generate_report'):
                     current_tab.generate_report()
+            
+            # Refresh draft listings when switched to
+            elif isinstance(current_tab, DraftListingsTab):
+                if hasattr(current_tab, 'load_inventory'):
+                    current_tab.load_inventory()
         except Exception as e:
             # Silently ignore tab refresh errors to prevent crashes
             print(f"Warning: Error refreshing tab: {e}")
@@ -276,6 +309,58 @@ class MainWindow(QMainWindow):
         msg_box.setText(message)
         msg_box.setIcon(icon)
         msg_box.exec()
+    
+    def open_settings(self):
+        """Open the settings dialog"""
+        from gui.settings_dialog import SettingsDialog
+        dialog = SettingsDialog(self.db, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Refresh all tabs to apply new settings
+            self.refresh_all_tabs()
+    
+    def show_about(self):
+        """Show about dialog"""
+        QMessageBox.about(
+            self,
+            "About eBay Reseller Manager",
+            "<h2>eBay Reseller Manager</h2>"
+            "<p>Version 2.0</p>"
+            "<p>A comprehensive business management tool for eBay resellers.</p>"
+            "<p><b>Features:</b></p>"
+            "<ul>"
+            "<li>Inventory Management</li>"
+            "<li>Expense Tracking</li>"
+            "<li>Pricing Calculator</li>"
+            "<li>Sales Analytics</li>"
+            "<li>eBay CSV Import/Export</li>"
+            "<li>Draft Listings Generator</li>"
+            "<li>Lot Listing Creator</li>"
+            "</ul>"
+            "<p>Built with Python & PyQt6</p>"
+        )
+    
+    def refresh_all_tabs(self):
+        """Refresh all tabs to apply new settings"""
+        try:
+            # Refresh each tab
+            if hasattr(self.dashboard_tab, 'refresh_dashboard'):
+                self.dashboard_tab.refresh_dashboard()
+            elif hasattr(self.dashboard_tab, 'refresh_data'):
+                self.dashboard_tab.refresh_data()
+            
+            if hasattr(self.inventory_tab, 'load_inventory'):
+                self.inventory_tab.load_inventory()
+            
+            if hasattr(self.expenses_tab, 'load_expenses'):
+                self.expenses_tab.load_expenses()
+            
+            if hasattr(self.sold_items_tab, 'load_sold_items'):
+                self.sold_items_tab.load_sold_items()
+            
+            if hasattr(self.draft_listings_tab, 'load_inventory'):
+                self.draft_listings_tab.load_inventory()
+        except Exception as e:
+            print(f"Error refreshing tabs: {e}")
     
     def closeEvent(self, event):
         """Handle window close event"""
