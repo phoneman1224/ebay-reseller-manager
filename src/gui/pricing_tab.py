@@ -160,24 +160,26 @@ class PricingTab(QWidget):
         self.item_combo.addItem("Select an item...", None)  # Add placeholder
         items = self.db.get_inventory_items(status='In Stock')
         for item in items:
-            # Convert Row to dict
+            # Convert Row to dict and get cost
             if not isinstance(item, dict):
                 item = dict(item)
-            display_text = f"{item['title'][:40]} (${item['purchase_cost']:.2f})"
+            cost = item.get('cost') or item.get('purchase_price') or 0
+            display_text = f"{item['title'][:40]} (${cost:.2f})"
             self.item_combo.addItem(display_text, item)
     
     def on_item_selected(self):
         """Handle inventory item selection"""
         item_data = self.item_combo.currentData()
         if item_data:
-            self.cost_input.setValue(item_data['purchase_cost'])
-            if item_data['weight_lbs']:
-                self.weight_input.setValue(item_data['weight_lbs'])
-            if item_data['length_in']:
+            cost = item_data.get('cost') or item_data.get('purchase_price') or 0
+            self.cost_input.setValue(cost)
+            if item_data.get('weight_lbs'):
+                self.weight_input.setValue(float(item_data['weight_lbs']))
+            if item_data.get('length_in'):
                 self.length_input.setValue(int(item_data['length_in']))
-            if item_data['width_in']:
+            if item_data.get('width_in'):
                 self.width_input.setValue(int(item_data['width_in']))
-            if item_data['height_in']:
+            if item_data.get('height_in'):
                 self.height_input.setValue(int(item_data['height_in']))
             self.calculate_prices()
     

@@ -203,7 +203,7 @@ class DashboardTab(QWidget):
         current_year = datetime.now().year
         
         # Inventory metrics
-        inventory_items = self.db.get_inventory_items(status='In Stock')
+        inventory_items = [dict(item) for item in self.db.get_inventory_items(status='In Stock')]
         inventory_value = self.db.get_inventory_value()
         inventory_count = len(inventory_items)
         

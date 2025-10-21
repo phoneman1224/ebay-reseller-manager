@@ -285,7 +285,11 @@ class Database:
             """
             SELECT
                 COALESCE(SUM(COALESCE(sold_price,0) * COALESCE(quantity,1)), 0)
-                - COALESCE(SUM(COALESCE(purchase_price,0) * COALESCE(quantity,1)), 0)
+                - COALESCE(SUM(COALESCE(
+                    CASE 
+                        WHEN cost IS NOT NULL THEN cost
+                        ELSE purchase_price 
+                    END,0) * COALESCE(quantity,1)), 0)
                 AS profit
             FROM inventory
             WHERE LOWER(status)='sold'
@@ -366,16 +370,27 @@ class Database:
             return self.add_inventory_item(data)
         
         # Check if item exists
-        self.cursor.execute("SELECT id FROM inventory WHERE sku=?", (sku,))
+        self.cursor.execute("SELECT id, cost, purchase_price FROM inventory WHERE sku=?", (sku,))
         row = self.cursor.fetchone()
         
         if row:
-            # Update existing
+            # Update existing but preserve cost/price fields if they exist
             item_id = row["id"]
+            existing = dict(row)
+            # Don't override existing cost/price values unless explicitly provided
+            if 'purchase_cost' in data and not data.get('purchase_price') and not data.get('cost'):
+                data['cost'] = data.pop('purchase_cost')
+            if not data.get('cost') and not data.get('purchase_price'):
+                if existing.get('cost'):
+                    data['cost'] = existing['cost']
+                elif existing.get('purchase_price'):
+                    data['purchase_price'] = existing['purchase_price']
             self.update_inventory_item(item_id, data)
             return item_id
         else:
-            # Insert new
+            # Insert new - normalize purchase_cost to cost
+            if 'purchase_cost' in data:
+                data['cost'] = data.pop('purchase_cost')
             data["sku"] = sku
             return self.add_inventory_item(data)
 
