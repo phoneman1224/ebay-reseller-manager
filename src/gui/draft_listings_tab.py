@@ -40,8 +40,9 @@ class DraftListingsTab(QWidget):
         
         # Instructions
         info_label = QLabel(
-            "💡 Select items from inventory below, then choose to create individual drafts "
-            "or combine into a lot listing."
+            "💡 Select items from inventory below (showing all non-sold items by default), "
+            "then choose to create individual drafts or combine into a lot listing. "
+            "Use the filter dropdown to show only specific statuses."
         )
         info_label.setStyleSheet("background-color: #E3F2FD; padding: 10px; border-radius: 4px;")
         info_label.setWordWrap(True)
@@ -65,9 +66,28 @@ class DraftListingsTab(QWidget):
         layout.addWidget(settings_group)
         
         # Inventory table with checkboxes
-        table_label = QLabel("📦 Available Inventory (In Stock Items)")
+        table_header = QHBoxLayout()
+        
+        table_label = QLabel("📦 Available Inventory")
         table_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-top: 10px;")
-        layout.addWidget(table_label)
+        table_header.addWidget(table_label)
+        
+        table_header.addStretch()
+        
+        # Status filter
+        filter_label = QLabel("Show:")
+        table_header.addWidget(filter_label)
+        
+        self.status_filter = QComboBox()
+        self.status_filter.addItems([
+            "All Non-Sold Items",
+            "In Stock",
+            "Listed"
+        ])
+        self.status_filter.currentTextChanged.connect(self.load_inventory)
+        table_header.addWidget(self.status_filter)
+        
+        layout.addLayout(table_header)
         
         self.table = QTableWidget()
         self.table.setColumnCount(8)
@@ -151,9 +171,21 @@ class DraftListingsTab(QWidget):
         layout.addLayout(generate_layout)
     
     def load_inventory(self):
-        """Load available inventory items (In Stock status)"""
+        """Load available inventory items (non-sold items by default)"""
         try:
-            items = self.db.get_items_for_drafts("In Stock")
+            # Get filter value from combo box if it exists, otherwise default to showing all non-sold
+            if hasattr(self, 'status_filter'):
+                status = self.status_filter.currentText()
+                if status == "All Non-Sold Items":
+                    # Get items that are NOT sold
+                    items = self.db.get_inventory_items()
+                    items = [item for item in items if item.get('status', '').lower() != 'sold']
+                else:
+                    items = self.db.get_items_for_drafts(status)
+            else:
+                # Default: show all non-sold items
+                items = self.db.get_inventory_items()
+                items = [item for item in items if item.get('status', '').lower() != 'sold']
             
             self.table.setRowCount(0)
             
