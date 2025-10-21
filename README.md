@@ -1,1 +1,0 @@
-# ebay-rseller-manager
