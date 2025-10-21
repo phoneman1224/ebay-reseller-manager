@@ -332,12 +332,29 @@ class ReportsTab(QWidget):
             stats = self.db.import_normalized(rtype, rows)
             self.preview_box.append(f"Imported: {stats}")
             QMessageBox.information(self, "Done", f"Import completed.\n{stats}")
-            # refresh tabs if available
-            for path_attr in ("inventory_tab", "sold_items_tab"):
-                try:
-                    getattr(self.parent().parent(), path_attr).refresh_data()
-                except Exception:
-                    pass
+            # Refresh UI: prefer calling the main window's refresh_all_tabs if available
+            try:
+                # Walk up parents to find the MainWindow which exposes refresh_all_tabs
+                p = self.parent()
+                while p is not None and not hasattr(p, 'refresh_all_tabs'):
+                    p = getattr(p, 'parent', lambda: None)()
+                if p and hasattr(p, 'refresh_all_tabs'):
+                    p.refresh_all_tabs()
+                else:
+                    # Fallback: attempt to call common refresh methods directly
+                    try:
+                        if hasattr(self.parent().parent(), 'inventory_tab'):
+                            self.parent().parent().inventory_tab.refresh_data()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self.parent().parent(), 'sold_items_tab'):
+                            self.parent().parent().sold_items_tab.load_sold_items()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             self.load_analytics()
         except Exception as e:
             QMessageBox.critical(self, "Import failed", str(e))

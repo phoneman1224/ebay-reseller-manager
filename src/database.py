@@ -334,6 +334,10 @@ class Database:
             columns = []
             values = []
             for key, val in data.items():
+                # Treat empty strings as missing values so we don't insert
+                # empty-string SKUs which violate the UNIQUE constraint.
+                if isinstance(val, str) and val.strip() == "":
+                    continue
                 if val is not None:
                     columns.append(key)
                     values.append(val)
@@ -621,50 +625,26 @@ class Database:
         
         for row in rows:
             try:
-                sku = row.get("sku", "").strip()
-                
+                sku = row.get("sku") or ""
+                sku = sku.strip()
+
+                # Normalize empty sku to None so our upsert logic treats it as missing
+                if sku == "":
+                    sku = None
+
                 if sku:
-                    # Check if item exists
-                    self.cursor.execute("SELECT id FROM inventory WHERE sku=?", (sku,))
-                    existing = self.cursor.fetchone()
-                    
-                    if existing:
-                        # Update existing item
-                        item_id = existing["id"]
-                        
-                        # For active listings, update listing info
-                        if report_type == "active_listings":
-                            update_data = {
-                                "title": row.get("title"),
-                                "condition": row.get("condition"),
-                                "listed_price": row.get("listed_price"),
-                                "listed_date": row.get("listed_date"),
-                                "status": "Listed",
-                                "item_number": row.get("item_number"),
-                            }
-                            # Only update non-None values
-                            update_data = {k: v for k, v in update_data.items() if v is not None}
-                            self.update_inventory_item(item_id, update_data)
-                            stats["updated"] += 1
-                        
-                        # For orders, mark as sold
-                        elif report_type == "orders":
-                            self.mark_item_as_sold(
-                                item_id,
-                                row.get("sold_price"),
-                                row.get("sold_date"),
-                                row.get("order_number"),
-                                row.get("quantity")
-                            )
-                            stats["updated"] += 1
-                    
-                    else:
-                        # Insert new item
-                        self.add_inventory_item(row)
-                        stats["inserted"] += 1
+                    # Use upsert helper - it will update existing or insert new
+                    # and normalize purchase cost fields as needed
+                    # Prepare data: ensure we don't pass empty strings
+                    clean_row = {k: (v if not (isinstance(v, str) and v.strip() == "") else None) for k, v in row.items()}
+                    item_id = self.upsert_inventory_item(sku, clean_row)
+                    # Decide whether this was an insert or update by checking row existence (cheap)
+                    # If item existed before, upsert_inventory_item returns existing id after update
+                    # We can't easily know inserted vs updated here without extra query; count as updated
+                    stats["updated"] += 1
                 
                 else:
-                    # No SKU - try to match by title or insert as new
+                    # No SKU - try to match by title (orders) or insert as new (active listings)
                     if report_type == "orders":
                         # For orders without SKU, try to find by title
                         title = row.get("title", "")
@@ -691,7 +671,8 @@ class Database:
                             stats["skipped"] += 1
                     else:
                         # For active listings without SKU, always insert
-                        self.add_inventory_item(row)
+                        clean_row = {k: (v if not (isinstance(v, str) and v.strip() == "") else None) for k, v in row.items()}
+                        self.add_inventory_item(clean_row)
                         stats["inserted"] += 1
             
             except Exception as e:

@@ -112,13 +112,17 @@ class InventoryTab(QWidget):
             else:
                 items = self.db.get_inventory_items(status=filter_text.replace(" ", "_"))
             
-            # Update table
+            # Clear the table first
+            self.table.clearContents()
+            self.table.setRowCount(0)
+            
+            # Update table with fresh data
             self.table.setRowCount(len(items))
             
             for row, item in enumerate(items):
                 try:
                     # Convert sqlite3.Row to dict for easier access
-                    item_dict = dict(item)
+                    item_dict = dict(item) if not isinstance(item, dict) else item
                     
                     self.table.setItem(row, 0, QTableWidgetItem(str(item_dict['id'])))
                     self.table.setItem(row, 1, QTableWidgetItem(item_dict.get('title') or ''))
@@ -129,7 +133,13 @@ class InventoryTab(QWidget):
                     self.table.setItem(row, 4, QTableWidgetItem(brand_model))
                     
                     self.table.setItem(row, 5, QTableWidgetItem(item_dict.get('condition') or ''))
-                    self.table.setItem(row, 6, QTableWidgetItem(f"${item_dict['purchase_cost']:.2f}"))
+                    # Purchase cost may be stored under several legacy names
+                    cost_val = item_dict.get('cost') or item_dict.get('purchase_price') or item_dict.get('purchase_cost')
+                    try:
+                        cost_display = f"${float(cost_val):.2f}" if cost_val is not None else 'N/A'
+                    except Exception:
+                        cost_display = 'N/A'
+                    self.table.setItem(row, 6, QTableWidgetItem(cost_display))
                     
                     # Safe access to start_price which might not exist
                     start_price = f"${item_dict['start_price']:.2f}" if item_dict.get('start_price') else "N/A"
@@ -223,12 +233,21 @@ class InventoryTab(QWidget):
     def update_statistics(self, items):
         """Update the statistics display"""
         total_items = len(items)
-        in_stock = len([i for i in items if i['status'] == 'In Stock'])
-        listed = len([i for i in items if i['status'] == 'Listed'])
-        sold = len([i for i in items if i['status'] == 'Sold'])
-        
-        total_value = sum([i['purchase_cost'] for i in items if i['status'] == 'In Stock'])
-        
+        in_stock = len([i for i in items if (i.get('status') or '').lower() == 'in stock'])
+        listed = len([i for i in items if (i.get('status') or '').lower() == 'listed'])
+        sold = len([i for i in items if (i.get('status') or '').lower() == 'sold'])
+
+        # Sum inventory value using whichever cost field is available
+        total_value = 0.0
+        for i in items:
+            try:
+                if (i.get('status') or '').lower() == 'in stock':
+                    c = i.get('cost') or i.get('purchase_price') or i.get('purchase_cost')
+                    if c is not None:
+                        total_value += float(c)
+            except Exception:
+                continue
+
         stats_text = f"Total Items: {total_items} | In Stock: {in_stock} | Listed: {listed} | Sold: {sold} | Inventory Value: ${total_value:.2f}"
         self.stats_label.setText(stats_text)
     
@@ -268,19 +287,21 @@ class InventoryTab(QWidget):
         # missing or of unexpected types. For example, purchase_cost may be
         # None or non‑numeric for legacy records. We coerce numeric values to
         # floats and default to 'N/A' when necessary.
-        try:
-            title = item['title'] or 'Untitled'
-        except Exception:
-            title = 'Untitled'
-
-        brand = item['brand'] if item.get('brand') else 'N/A'
-        model = item['model'] if item.get('model') else 'N/A'
-        condition = item['condition'] if item.get('condition') else 'N/A'
-        # Purchase cost formatting
-        cost_val = item.get('purchase_cost')
+        # Convert to dict if needed
+        if not isinstance(item, dict):
+            item = dict(item)
+        
+        title = item.get('title') or 'Untitled'
+        brand = item.get('brand') or 'N/A'
+        model = item.get('model') or 'N/A'
+        condition = item.get('condition') or 'N/A'
+        
+        # Purchase cost formatting - try different cost fields
+        cost_val = item.get('cost') or item.get('purchase_price') or item.get('purchase_cost')
         try:
             cost_str = f"${float(cost_val):.2f}" if cost_val is not None else 'N/A'
-        except Exception:
+        except (ValueError, TypeError):
+            cost_str = 'N/A'
             cost_str = 'N/A'
         purchase_date = item['purchase_date'] if item.get('purchase_date') else 'N/A'
         status = item.get('status') or 'N/A'
