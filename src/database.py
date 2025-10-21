@@ -7,7 +7,9 @@ import sqlite3
 import datetime
 from typing import Any, Dict, List, Optional
 
-DEFAULT_DB_PATH = os.path.join("data", "reseller.db")
+# Get absolute path for database relative to application directory
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_DB_PATH = os.path.join(APP_DIR, "data", "reseller.db")
 
 
 class Database:
@@ -32,11 +34,20 @@ class Database:
     }
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH):
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        self.conn = sqlite3.connect(db_path)
-        self.conn.row_factory = sqlite3.Row
-        self.cursor = self.conn.cursor()
-        self.create_tables()
+        """Initialize database connection and create tables if needed.
+        
+        Args:
+            db_path: Path to SQLite database file. Uses default path if not specified.
+        """
+        try:
+            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+            self.conn = sqlite3.connect(db_path)
+            self.conn.row_factory = sqlite3.Row
+            self.cursor = self.conn.cursor()
+            self.create_tables()
+        except Exception as e:
+            self.log_error("Database initialization failed", str(e))
+            raise
 
     # ---------------------------- schema ----------------------------
     def create_tables(self):
@@ -315,23 +326,27 @@ class Database:
     # ---------------------------- CRUD operations ----------------------------
     def add_inventory_item(self, data: Dict[str, Any]) -> int:
         """Add a new inventory item. Returns the new item's ID."""
-        columns = []
-        values = []
-        for key, val in data.items():
-            if val is not None:
-                columns.append(key)
-                values.append(val)
-        
-        if not columns:
-            raise ValueError("No data provided for inventory item")
-        
-        placeholders = ",".join("?" * len(columns))
-        cols_str = ",".join(columns)
-        sql = f"INSERT INTO inventory ({cols_str}) VALUES ({placeholders})"
-        
-        self.cursor.execute(sql, values)
-        self.conn.commit()
-        return self.cursor.lastrowid
+        try:
+            columns = []
+            values = []
+            for key, val in data.items():
+                if val is not None:
+                    columns.append(key)
+                    values.append(val)
+            
+            if not columns:
+                raise ValueError("No data provided for inventory item")
+            
+            placeholders = ",".join("?" * len(columns))
+            cols_str = ",".join(columns)
+            sql = f"INSERT INTO inventory ({cols_str}) VALUES ({placeholders})"
+            
+            self.cursor.execute(sql, values)
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except Exception as e:
+            self.log_error("add_inventory_item", str(e))
+            raise
 
     def update_inventory_item(self, item_id: int, data: Dict[str, Any]):
         """Update an existing inventory item."""
@@ -672,12 +687,35 @@ class Database:
         return stats
 
     # ---------------------------- housekeeping ----------------------------
+    def log_error(self, context: str, message: str):
+        """Log an error to the database.
+        
+        Args:
+            context: Error context/location
+            message: Error message details
+        """
+        try:
+            self.cursor.execute(
+                """
+                INSERT INTO error_logs (created_at, context, message)
+                VALUES (datetime('now'), ?, ?)
+                """,
+                (context, message)
+            )
+            self.conn.commit()
+        except Exception:
+            # If we can't log the error, print it at least
+            print(f"Error logging failed - Context: {context}, Message: {message}")
+            
     def clear_error_logs(self):
+        """Clear all error logs from the database."""
         self.cursor.execute("DELETE FROM error_logs")
         self.conn.commit()
 
     def close(self):
+        """Close the database connection."""
         try:
-            self.conn.close()
-        except Exception:
-            pass
+            if hasattr(self, 'conn'):
+                self.conn.close()
+        except Exception as e:
+            print(f"Error closing database: {e}")

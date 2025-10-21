@@ -24,6 +24,15 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.db = db
         self.init_ui()
+        
+    def closeEvent(self, event):
+        """Handle window close event to clean up database connection."""
+        try:
+            if hasattr(self, 'db'):
+                self.db.close()
+        except Exception as e:
+            print(f"Error closing database connection: {e}")
+        event.accept()
     
     def init_ui(self):
         """Initialize the user interface"""
