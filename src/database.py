@@ -33,6 +33,26 @@ class Database:
         "order_number": "order_number",
     }
 
+    # Column fallbacks used when normalising CSV imports.  Each value is an
+    # ordered list of column names that should be attempted if the user has
+    # not customised the mapping for a particular field.
+    ACTIVE_IMPORT_DEFAULTS = {
+        "title": ["Title"],
+        "sku": ["Custom label (SKU)", "Custom Label"],
+        "condition": ["Condition"],
+        "listed_price": ["Current price", "Start price", "Price"],
+        "listed_date": ["Start date", "Start Date"],
+    }
+
+    ORDERS_IMPORT_DEFAULTS = {
+        "title": ["Item Title", "Title"],
+        "sku": ["Custom Label", "Custom label (SKU)", "SKU"],
+        "sold_price": ["Sold For", "Total Price", "Sale Price", "Sold Price"],
+        "sold_date": ["Sale Date", "Paid on Date", "Paid On Date"],
+        "quantity": ["Quantity", "Qty"],
+        "order_number": ["Order Number", "Sales Record Number"],
+    }
+
     def __init__(self, db_path: str = DEFAULT_DB_PATH):
         """Initialize database connection and create tables if needed.
         
@@ -48,6 +68,49 @@ class Database:
         except Exception as e:
             self.log_error("Database initialization failed", str(e))
             raise
+
+    def _row_to_dict(self, row: Any) -> Optional[Dict[str, Any]]:
+        """Convert a sqlite3.Row (or similar mapping) to a plain dict.
+
+        The application historically relied on a ``purchase_cost`` key being
+        present on inventory records even though the underlying schema stores
+        the value as ``cost`` or ``purchase_price``.  Returning a plain dict is
+        convenient for the PyQt views, but we also need to preserve those legacy
+        aliases so existing widgets do not raise ``KeyError`` when formatting
+        values.  This helper normalises the data before handing it back to the
+        caller.
+        """
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            data = dict(row)
+        else:
+            try:
+                data = dict(row)
+            except TypeError:
+                keys_fn = getattr(row, "keys", lambda: [])
+                data = {key: row[key] for key in keys_fn()}
+
+        # Normalise cost aliases for backwards compatibility.
+        if "purchase_cost" not in data:
+            for alias in ("cost", "purchase_price"):
+                if data.get(alias) not in (None, ""):
+                    try:
+                        data["purchase_cost"] = float(data[alias])
+                    except (TypeError, ValueError):
+                        data["purchase_cost"] = data[alias]
+                    break
+        # Ensure the inverse aliases exist when only purchase_cost is present.
+        if "purchase_cost" in data:
+            for alias in ("cost", "purchase_price"):
+                if alias not in data or data[alias] in (None, ""):
+                    data[alias] = data["purchase_cost"]
+
+        return data
+
+    def _rows_to_dicts(self, rows: List[Any]) -> List[Dict[str, Any]]:
+        """Convert an iterable of rows into dictionaries."""
+        return [r for r in (self._row_to_dict(row) for row in rows) if r is not None]
 
     # ---------------------------- schema ----------------------------
     def create_tables(self):
@@ -201,6 +264,41 @@ class Database:
                 continue
         return s
 
+    def _resolve_mapped_value(
+        self,
+        row: Dict[str, Any],
+        mapping: Optional[Dict[str, str]],
+        field: str,
+        fallbacks: List[str],
+    ) -> Optional[str]:
+        """Return the value for ``field`` using the user-defined mapping.
+
+        The mapping stored in the database allows multiple fallbacks separated
+        by the ``|`` character.  We also try a curated list of sensible
+        defaults so that freshly exported eBay reports work even before the
+        user customises the mapping.  Column matching is case-insensitive.
+        """
+
+        candidates: List[str] = []
+        if mapping and mapping.get(field):
+            candidates.extend(part.strip() for part in mapping[field].split("|") if part.strip())
+        candidates.extend([c for c in fallbacks if c])
+
+        if not candidates:
+            return None
+
+        lower_key_map = {k.lower(): k for k in row.keys()}
+
+        for column in candidates:
+            lookup = column.lower()
+            actual_key = column if column in row else lower_key_map.get(lookup)
+            if not actual_key:
+                continue
+            value = row.get(actual_key)
+            if value not in (None, ""):
+                return value
+        return None
+
     # ---------------------------- settings ----------------------------
     def get_import_settings(self):
         self.cursor.execute("SELECT settings_json FROM import_settings WHERE id=1")
@@ -229,6 +327,19 @@ class Database:
         row = self.cursor.fetchone()
         return json.loads(row["mapping_json"]) if row else {}
 
+    def update_mapping(self, report_type: str, mapping: Dict[str, Any]):
+        """Persist a mapping for a given report type."""
+        mapping_json = json.dumps(mapping)
+        self.cursor.execute(
+            """
+            INSERT INTO import_mappings (report_type, mapping_json)
+            VALUES (?, ?)
+            ON CONFLICT(report_type) DO UPDATE SET mapping_json=excluded.mapping_json
+            """,
+            (report_type, mapping_json),
+        )
+        self.conn.commit()
+
     # ---------------------------- data access ----------------------------
     def get_inventory_items(self, **kwargs):
         status = kwargs.get("status")
@@ -249,15 +360,15 @@ class Database:
             params += [q, q]
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         self.cursor.execute(f"SELECT * FROM inventory{where} ORDER BY id DESC", params)
-        return self.cursor.fetchall()
+        return self._rows_to_dicts(self.cursor.fetchall())
 
     def get_inventory_item(self, item_id: int):
         self.cursor.execute("SELECT * FROM inventory WHERE id=?", (item_id,))
-        return self.cursor.fetchone()
+        return self._row_to_dict(self.cursor.fetchone())
 
     def get_expenses(self):
         self.cursor.execute("SELECT * FROM expenses ORDER BY date DESC, id DESC")
-        return self.cursor.fetchall()
+        return self._rows_to_dicts(self.cursor.fetchall())
 
     def get_sold_items(self, *args, **kwargs):
         """Return sold inventory items."""
@@ -271,8 +382,26 @@ class Database:
         return float(self.cursor.fetchone()["total"])
 
     def get_inventory_value(self, *args):
-        self.cursor.execute("SELECT COALESCE(SUM(listed_price), 0) AS total FROM inventory WHERE LOWER(status)='listed'")
-        return float(self.cursor.fetchone()["total"])
+        """Return the total value of inventory that has not been sold."""
+        self.cursor.execute(
+            "SELECT status, listed_price, cost, purchase_price FROM inventory "
+            "WHERE status IS NULL OR LOWER(status)!='sold'"
+        )
+        rows = self.cursor.fetchall()
+        total = 0.0
+        for row in rows:
+            status = (row["status"] or "").lower()
+            if status == "listed" and row["listed_price"] is not None:
+                total += float(row["listed_price"])
+                continue
+
+            cost_val = row["cost"]
+            if cost_val is None:
+                cost_val = row["purchase_price"]
+            if cost_val is not None:
+                total += float(cost_val)
+
+        return float(total)
 
     def get_total_revenue(self, *args):
         self.cursor.execute(
@@ -325,12 +454,20 @@ class Database:
         where = " WHERE " + " AND ".join(clauses)
         sql = f"SELECT * FROM inventory{where} ORDER BY sold_date DESC, id DESC"
         self.cursor.execute(sql, params)
-        return self.cursor.fetchall()
+        return self._rows_to_dicts(self.cursor.fetchall())
 
     # ---------------------------- CRUD operations ----------------------------
     def add_inventory_item(self, data: Dict[str, Any]) -> int:
         """Add a new inventory item. Returns the new item's ID."""
         try:
+            data = dict(data or {})
+            # Normalise legacy field names so callers can continue passing
+            # purchase_cost without worrying about the underlying schema.
+            if 'purchase_cost' in data:
+                purchase_cost = data.pop('purchase_cost')
+                if data.get('cost') is None and data.get('purchase_price') is None:
+                    data['cost'] = purchase_cost
+
             columns = []
             values = []
             for key, val in data.items():
@@ -440,9 +577,17 @@ class Database:
         self.cursor.execute("DELETE FROM expenses WHERE id=?", (expense_id,))
         self.conn.commit()
 
-    def mark_item_as_sold(self, item_id: int, sold_price: float, sold_date: str, 
-                          order_number: str = None, quantity: int = None):
+    def mark_item_as_sold(self, item_id: int, sold_price: float = None, sold_date: str = None,
+                          order_number: str = None, quantity: int = None, **kwargs):
         """Mark an inventory item as sold."""
+        # Accept legacy keyword names used throughout the code base/tests.
+        if sold_price is None and "sale_price" in kwargs:
+            sold_price = kwargs.pop("sale_price")
+        if sold_date is None and "sale_date" in kwargs:
+            sold_date = kwargs.pop("sale_date")
+        if quantity is None and "qty" in kwargs:
+            quantity = kwargs.pop("qty")
+
         data = {
             "status": "Sold",
             "sold_price": sold_price,
@@ -475,7 +620,7 @@ class Database:
             "SELECT * FROM inventory WHERE LOWER(status)=LOWER(?) ORDER BY title",
             (status,)
         )
-        return self.cursor.fetchall()
+        return self._rows_to_dicts(self.cursor.fetchall())
 
     def get_condition_id_mapping(self) -> Dict[str, str]:
         """Return eBay condition text to Condition ID mapping."""
@@ -493,7 +638,7 @@ class Database:
         }
 
     # ---------------------------- CSV Import ----------------------------
-    def normalize_csv_file(self, filepath: str, report_type: Optional[str] = None, 
+    def normalize_csv_file(self, filepath: str, report_type: Optional[str] = None,
                           dry_run: bool = False) -> Dict[str, Any]:
         """
         Normalize an eBay CSV file (Active Listings or Orders Report).
@@ -528,31 +673,44 @@ class Database:
         headers = list(rows[0].keys())
         
         if report_type is None:
-            if "Item number" in headers and "Custom label (SKU)" in headers:
+            headers_lower = {h.lower() for h in headers}
+
+            def has_any(options: List[str]) -> bool:
+                return any(opt.lower() in headers_lower for opt in options if opt)
+
+            if has_any(["Item number", "Item Number"]) and has_any(self.ACTIVE_IMPORT_DEFAULTS["sku"]):
                 report_type = "active_listings"
-            elif "Order Number" in headers and "Item Title" in headers and "Sold For" in headers:
+            elif (
+                has_any(self.ORDERS_IMPORT_DEFAULTS["order_number"])
+                and has_any(self.ORDERS_IMPORT_DEFAULTS["title"])
+                and has_any(self.ORDERS_IMPORT_DEFAULTS["sold_price"])
+            ):
                 report_type = "orders"
             else:
                 warnings.append("Could not auto-detect report type")
                 return {"report_type": None, "normalized_rows": [], "warnings": warnings}
         
         # Normalize based on report type
+        mapping = None
+        if report_type:
+            try:
+                mapping = self.get_mapping(report_type)
+            except Exception:
+                mapping = None
+
         if report_type == "active_listings":
             for idx, row in enumerate(rows, 1):
                 try:
-                    normalized = self._normalize_active_listing(row)
+                    normalized = self._normalize_active_listing(row, mapping)
                     if normalized:
                         normalized_rows.append(normalized)
                 except Exception as e:
                     warnings.append(f"Row {idx}: {str(e)}")
-        
+
         elif report_type == "orders":
             for idx, row in enumerate(rows, 1):
                 try:
-                    # Skip header rows or empty rows
-                    if not row.get("Item Title") or not row.get("Sold For"):
-                        continue
-                    normalized = self._normalize_order(row)
+                    normalized = self._normalize_order(row, mapping)
                     if normalized:
                         normalized_rows.append(normalized)
                 except Exception as e:
@@ -564,24 +722,40 @@ class Database:
             "warnings": warnings
         }
 
-    def _normalize_active_listing(self, row: Dict[str, str]) -> Optional[Dict[str, Any]]:
-        """Normalize an Active Listings CSV row"""
-        title = row.get("Title", "").strip()
+    def _normalize_active_listing(
+        self,
+        row: Dict[str, str],
+        mapping: Optional[Dict[str, str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Normalize an Active Listings CSV row."""
+
+        title = (self._resolve_mapped_value(
+            row, mapping, "title", self.ACTIVE_IMPORT_DEFAULTS["title"]
+        ) or "").strip()
         if not title:
             return None
-        
-        # Parse price - try Current price first, then Start price
-        price_str = row.get("Current price", "") or row.get("Start price", "")
+
+        price_raw = self._resolve_mapped_value(
+            row, mapping, "listed_price", self.ACTIVE_IMPORT_DEFAULTS["listed_price"]
+        )
+        price_str = price_raw or ""
         listed_price = self._parse_float(price_str)
-        
+
         # Parse date
-        date_str = row.get("Start date", "")
+        date_raw = self._resolve_mapped_value(
+            row, mapping, "listed_date", self.ACTIVE_IMPORT_DEFAULTS["listed_date"]
+        )
+        date_str = date_raw or ""
         listed_date = self._parse_date_iso(date_str)
-        
+
         return {
             "title": title,
-            "sku": row.get("Custom label (SKU)", "").strip(),
-            "condition": row.get("Condition", "").strip(),
+            "sku": (self._resolve_mapped_value(
+                row, mapping, "sku", self.ACTIVE_IMPORT_DEFAULTS["sku"]
+            ) or "").strip(),
+            "condition": (self._resolve_mapped_value(
+                row, mapping, "condition", self.ACTIVE_IMPORT_DEFAULTS["condition"]
+            ) or "").strip(),
             "listed_price": listed_price,
             "listed_date": listed_date,
             "status": "Listed",
@@ -591,27 +765,51 @@ class Database:
             "category_id": row.get("eBay category 1 number", "").strip(),
         }
 
-    def _normalize_order(self, row: Dict[str, str]) -> Optional[Dict[str, Any]]:
-        """Normalize an Orders Report CSV row"""
-        title = row.get("Item Title", "").strip()
+    def _normalize_order(
+        self,
+        row: Dict[str, str],
+        mapping: Optional[Dict[str, str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Normalize an Orders Report CSV row."""
+
+        title = (self._resolve_mapped_value(
+            row, mapping, "title", self.ORDERS_IMPORT_DEFAULTS["title"]
+        ) or "").strip()
         if not title:
             return None
-        
-        # Parse sold price
-        sold_price = self._parse_float(row.get("Sold For", ""))
-        
+
+        sold_price_raw = self._resolve_mapped_value(
+            row, mapping, "sold_price", self.ORDERS_IMPORT_DEFAULTS["sold_price"]
+        )
+        sold_price = self._parse_float(sold_price_raw or "")
+
+        if sold_price is None:
+            return None
+
         # Parse date
-        date_str = row.get("Sale Date", "")
+        date_raw = self._resolve_mapped_value(
+            row, mapping, "sold_date", self.ORDERS_IMPORT_DEFAULTS["sold_date"]
+        )
+        date_str = date_raw or ""
         sold_date = self._parse_date_iso(date_str)
-        
+
         return {
             "title": title,
-            "sku": row.get("Custom Label", "").strip(),
+            "sku": (self._resolve_mapped_value(
+                row, mapping, "sku", self.ORDERS_IMPORT_DEFAULTS["sku"]
+            ) or "").strip(),
             "sold_price": sold_price,
             "sold_date": sold_date,
             "status": "Sold",
-            "quantity": self._safe_int(row.get("Quantity"), 1),
-            "order_number": row.get("Order Number", "").strip(),
+            "quantity": self._safe_int(
+                self._resolve_mapped_value(
+                    row, mapping, "quantity", self.ORDERS_IMPORT_DEFAULTS["quantity"]
+                ),
+                1,
+            ),
+            "order_number": (self._resolve_mapped_value(
+                row, mapping, "order_number", self.ORDERS_IMPORT_DEFAULTS["order_number"]
+            ) or "").strip(),
             "item_number": row.get("Item Number", "").strip(),
         }
 

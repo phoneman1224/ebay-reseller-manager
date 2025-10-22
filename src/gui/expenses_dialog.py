@@ -6,6 +6,8 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
                            QCheckBox, QHBoxLayout, QMessageBox, QLabel)
 from PyQt6.QtCore import Qt, QDate
 
+from .value_helpers import resolve_cost, format_currency
+
 class ExpenseDialog(QDialog):
     def __init__(self, parent=None, db=None, expense_data=None):
         super().__init__(parent)
@@ -111,7 +113,9 @@ class ExpenseDialog(QDialog):
         try:
             items = self.db.get_inventory_items(status="In Stock")
             for item in items:
-                display_text = f"{item['title']} (${item['purchase_cost']:.2f})"
+                title = item.get('title') or 'Untitled'
+                cost_text = format_currency(resolve_cost(item))
+                display_text = f"{title} ({cost_text})"
                 self.inventory_combo.addItem(display_text, item['id'])
         except Exception as e:
             print(f"Error loading inventory items: {e}")

@@ -1,12 +1,16 @@
 """
 Inventory Tab - Manage inventory items
 """
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QTableWidget, QTableWidgetItem, QLabel, QDialog,
                              QFormLayout, QLineEdit, QTextEdit, QComboBox,
-                             QDateEdit, QDoubleSpinBox, QMessageBox, QHeaderView)
+                             QDateEdit, QDoubleSpinBox, QMessageBox, QHeaderView,
+                             QFileDialog)
 from PyQt6.QtCore import Qt, QDate
 from datetime import datetime
+
+
+from .value_helpers import resolve_cost, format_currency
 
 
 class InventoryTab(QWidget):
@@ -43,6 +47,11 @@ class InventoryTab(QWidget):
         import_btn = QPushButton("📄 Import from Excel")
         import_btn.clicked.connect(self.show_import_dialog)
         header.addWidget(import_btn)
+
+        refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn.setToolTip("Reload inventory data from the database")
+        refresh_btn.clicked.connect(self.refresh_data)
+        header.addWidget(refresh_btn)
         
         layout.addLayout(header)
         
@@ -133,13 +142,8 @@ class InventoryTab(QWidget):
                     self.table.setItem(row, 4, QTableWidgetItem(brand_model))
                     
                     self.table.setItem(row, 5, QTableWidgetItem(item_dict.get('condition') or ''))
-                    # Purchase cost may be stored under several legacy names
-                    cost_val = item_dict.get('cost') or item_dict.get('purchase_price') or item_dict.get('purchase_cost')
-                    try:
-                        cost_display = f"${float(cost_val):.2f}" if cost_val is not None else 'N/A'
-                    except Exception:
-                        cost_display = 'N/A'
-                    self.table.setItem(row, 6, QTableWidgetItem(cost_display))
+                    cost_val = resolve_cost(item_dict)
+                    self.table.setItem(row, 6, QTableWidgetItem(format_currency(cost_val)))
                     
                     # Safe access to start_price which might not exist
                     start_price = f"${item_dict['start_price']:.2f}" if item_dict.get('start_price') else "N/A"
@@ -229,6 +233,15 @@ class InventoryTab(QWidget):
         except Exception as e:
             print(f"Error refreshing data: {e}")
             QMessageBox.warning(self, "Error", f"Error loading inventory: {str(e)}")
+
+    # MainWindow expects inventory tabs to expose a load_inventory method so
+    # that it can refresh the view whenever the tab becomes active. The
+    # previous implementation only provided refresh_data, which meant the tab
+    # never reloaded after an import performed elsewhere in the app. Providing
+    # this thin wrapper keeps backwards compatibility with callers that expect
+    # load_inventory.
+    def load_inventory(self):
+        self.refresh_data()
     
     def update_statistics(self, items):
         """Update the statistics display"""
@@ -242,9 +255,9 @@ class InventoryTab(QWidget):
         for i in items:
             try:
                 if (i.get('status') or '').lower() == 'in stock':
-                    c = i.get('cost') or i.get('purchase_price') or i.get('purchase_cost')
-                    if c is not None:
-                        total_value += float(c)
+                    cost_val = resolve_cost(i)
+                    if cost_val is not None:
+                        total_value += cost_val
             except Exception:
                 continue
 
@@ -297,12 +310,7 @@ class InventoryTab(QWidget):
         condition = item.get('condition') or 'N/A'
         
         # Purchase cost formatting - try different cost fields
-        cost_val = item.get('cost') or item.get('purchase_price') or item.get('purchase_cost')
-        try:
-            cost_str = f"${float(cost_val):.2f}" if cost_val is not None else 'N/A'
-        except (ValueError, TypeError):
-            cost_str = 'N/A'
-            cost_str = 'N/A'
+        cost_str = format_currency(resolve_cost(item))
         purchase_date = item['purchase_date'] if item.get('purchase_date') else 'N/A'
         status = item.get('status') or 'N/A'
         storage = item['storage_location'] if item.get('storage_location') else 'N/A'
@@ -360,11 +368,53 @@ class InventoryTab(QWidget):
             self.refresh_data()
     
     def show_import_dialog(self):
-        """Show the Excel import dialog"""
-        from gui.excel_import import ExcelImportDialog
-        dialog = ExcelImportDialog(parent=self, db=self.db)
-        dialog.exec()
-        self.refresh_data()
+        """Import an Active Listings CSV and refresh the table."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Active Listings CSV",
+            "",
+            "CSV Files (*.csv)"
+        )
+
+        if not filepath:
+            return
+
+        try:
+            result = self.db.normalize_csv_file(filepath, report_type="active_listings")
+            rows = result.get("normalized_rows", [])
+            warnings = result.get("warnings", [])
+
+            if not rows:
+                warning_text = "No importable rows were found in the selected file."
+                if warnings:
+                    warning_text += "\n\n" + "\n".join(warnings)
+                QMessageBox.warning(self, "No Data Imported", warning_text)
+                return
+
+            stats = self.db.import_normalized("active_listings", rows)
+
+            message_lines = [
+                "Active listings imported successfully!",
+                f"Updated items: {stats.get('updated', 0)}",
+                f"New items: {stats.get('inserted', 0)}",
+            ]
+            if stats.get("skipped"):
+                message_lines.append(f"Skipped rows: {stats['skipped']}")
+            if stats.get("errors"):
+                message_lines.append(f"Errors: {stats['errors']}")
+            if warnings:
+                message_lines.append("\nWarnings:")
+                message_lines.extend(warnings)
+
+            QMessageBox.information(self, "Import Complete", "\n".join(message_lines))
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Import Failed",
+                f"An error occurred while importing the CSV file:\n{str(e)}"
+            )
+        finally:
+            self.refresh_data()
     
     def mark_as_sold_dialog(self, item_id):
         """Show dialog to mark item as sold"""
@@ -374,15 +424,21 @@ class InventoryTab(QWidget):
             QMessageBox.warning(self, "Not Found", "Item not found.")
             return
         
+        if not isinstance(item, dict):
+            item = dict(item)
+
         # Create dialog
         dialog = QDialog(self)
         dialog.setWindowTitle("💰 Mark as Sold")
         dialog.setMinimumWidth(500)
-        
+
         layout = QVBoxLayout(dialog)
-        
+
         # Item info
-        info_label = QLabel(f"<b>Item:</b> {item['title']}<br><b>Cost:</b> ${item['purchase_cost']:.2f}")
+        info_label = QLabel(
+            f"<b>Item:</b> {item.get('title', 'Untitled')}"
+            f"<br><b>Cost:</b> {format_currency(resolve_cost(item))}"
+        )
         info_label.setStyleSheet("""
             background-color: #E3F2FD;
             padding: 10px;
@@ -431,7 +487,7 @@ class InventoryTab(QWidget):
         # Update profit calculation
         def update_profit():
             try:
-                cost = float(item['purchase_cost'])
+                cost = resolve_cost(item) or 0.0
                 sale_price = float(sale_price_input.text() or 0)
                 fees = float(fees_input.text() or 0)
                 profit = sale_price - cost - fees
@@ -644,37 +700,41 @@ class AddEditItemDialog(QDialog):
         item = self.db.get_inventory_item(self.item_id)
         if not item:
             return
-        
-        self.title_input.setText(item['title'] or '')
-        self.brand_input.setText(item['brand'] or '')
-        self.model_input.setText(item['model'] or '')
-        self.upc_input.setText(item['upc_isbn'] or '')
-        
-        if item['condition']:
-            index = self.condition_combo.findText(item['condition'])
+
+        if not isinstance(item, dict):
+            item = dict(item)
+
+        self.title_input.setText(item.get('title') or '')
+        self.brand_input.setText(item.get('brand') or '')
+        self.model_input.setText(item.get('model') or '')
+        self.upc_input.setText(item.get('upc_isbn') or item.get('upc') or '')
+
+        condition = item.get('condition')
+        if condition:
+            index = self.condition_combo.findText(condition)
             if index >= 0:
                 self.condition_combo.setCurrentIndex(index)
-        
-        self.cost_input.setValue(item['purchase_cost'])
-        
-        if item['purchase_date']:
+
+        self.cost_input.setValue(resolve_cost(item) or 0.0)
+
+        if item.get('purchase_date'):
             date = QDate.fromString(item['purchase_date'], "yyyy-MM-dd")
             self.date_input.setDate(date)
-        
-        self.source_input.setText(item['purchase_source'] or '')
-        self.storage_input.setText(item['storage_location'] or '')
-        
-        if item['weight_lbs']:
+
+        self.source_input.setText(item.get('purchase_source') or '')
+        self.storage_input.setText(item.get('storage_location') or '')
+
+        if item.get('weight_lbs'):
             self.weight_input.setValue(item['weight_lbs'])
-        if item['length_in']:
+        if item.get('length_in'):
             self.length_input.setValue(item['length_in'])
-        if item['width_in']:
+        if item.get('width_in'):
             self.width_input.setValue(item['width_in'])
-        if item['height_in']:
+        if item.get('height_in'):
             self.height_input.setValue(item['height_in'])
-        
-        self.description_input.setPlainText(item['description'] or '')
-        self.notes_input.setPlainText(item['notes'] or '')
+
+        self.description_input.setPlainText(item.get('description') or '')
+        self.notes_input.setPlainText(item.get('notes') or '')
     
     def save_item(self):
         """Save the item to database"""

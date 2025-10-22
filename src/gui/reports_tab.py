@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import csv
 import datetime
-from typing import Optional, List
+from typing import Optional
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -20,19 +20,11 @@ try:
 except Exception:
     HAVE_MAPPING_DIALOG = False
 
-# New item selector dialog (we add this file below)
-try:
-    from .draft_select_dialog import DraftSelectDialog
-    HAVE_SELECT_DIALOG = True
-except Exception:
-    HAVE_SELECT_DIALOG = False
-
 
 class ReportsTab(QWidget):
     def __init__(self, db, parent=None):
         super().__init__(parent)
         self.db = db
-        self._selected_item_ids: List[int] = []
         self.init_ui()
 
     # ------------------------------ UI
@@ -187,27 +179,26 @@ class ReportsTab(QWidget):
         g.setStyleSheet("QGroupBox{font-size:13px;margin-top:6px;}QGroupBox::title{left:6px;padding:2px 4px;}")
         f = QFormLayout(g); f.setContentsMargins(8,6,8,6); f.setVerticalSpacing(6); f.setHorizontalSpacing(8)
 
-        self.category_id_edit = QLineEdit(); self.category_id_edit.setPlaceholderText("Default Category ID (e.g., 47140)")
+        info = QLabel(
+            "Draft listing exports now live on the dedicated 📝 Draft Listings tab "
+            "so you can manage templates and lot listings in one place."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color:#555;")
+        f.addRow(info)
+
         try:
-            settings = self.db.get_import_settings()
-            default_cat = settings.get("default_category_id")
-            if default_cat: self.category_id_edit.setText(str(default_cat))
+            default_cat = self.db.get_setting("default_category_id", "47140")
         except Exception:
-            pass
-        f.addRow("Category ID:", self.category_id_edit)
+            default_cat = "47140"
+        cat_hint = QLabel(f"Current default category ID: {default_cat}")
+        cat_hint.setStyleSheet("color:#777;")
+        f.addRow(cat_hint)
 
-        # NEW: select items button
-        self.btn_select = QPushButton("Select Items…")
-        self.btn_select.setStyleSheet(self._btn_style())
-        self.btn_select.clicked.connect(self.open_item_selector)
-        f.addRow(self.btn_select)
-
-        # Generate drafts from selected (or all unsold if none selected)
-        self.btn_generate = QPushButton("Generate Drafts")
-        self.btn_generate.setMinimumHeight(32)
-        self.btn_generate.setStyleSheet(self._secondary_btn_style())
-        self.btn_generate.clicked.connect(self.generate_drafts_clicked)
-        f.addRow(self.btn_generate)
+        open_btn = QPushButton("Open Draft Listings Tab")
+        open_btn.setStyleSheet(self._btn_style())
+        open_btn.clicked.connect(self.open_draft_tab)
+        f.addRow(open_btn)
 
         if compact:
             g.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
@@ -365,88 +356,31 @@ class ReportsTab(QWidget):
         ImportMappingDialog(self.db, self).exec()
 
     # eBay Drafts
-    def open_item_selector(self):
-        if not HAVE_SELECT_DIALOG or not hasattr(self.db, "get_inventory_items"):
-            return QMessageBox.information(self, "Not available", "Item selector or inventory API not available.")
-        items = self.db.get_inventory_items()
-        dlg = DraftSelectDialog(items, parent=self)
-        if dlg.exec():
-            self._selected_item_ids = dlg.selected_ids()
-
-    def generate_drafts_clicked(self):
-        if not hasattr(self.db, "get_inventory_items"):
-            return QMessageBox.warning(self, "Not available", "Inventory API not found.")
+    def open_draft_tab(self):
+        """Switch to the dedicated Draft Listings tab."""
+        window = self.window()
         try:
-            items = [dict(r) for r in self.db.get_inventory_items()]
-        except Exception as e:
-            return QMessageBox.critical(self, "Error", f"Could not read inventory: {e}")
-
-        # Decide which records to include
-        selected_ids = set(self._selected_item_ids or [])
-        rows = []
-        for r in items:
-            status = (r.get("status") or "").lower()
-            if selected_ids:
-                if r.get("id") not in selected_ids:
-                    continue
+            if hasattr(window, "tabs") and hasattr(window, "draft_listings_tab"):
+                target_index = window.tabs.indexOf(window.draft_listings_tab)
+                if target_index != -1:
+                    window.tabs.setCurrentIndex(target_index)
+                    # Ensure the draft tab refreshes its data so newly imported
+                    # inventory appears immediately.
+                    try:
+                        window.draft_listings_tab.load_inventory()
+                    except Exception:
+                        pass
+                else:
+                    QMessageBox.information(
+                        self,
+                        "Draft Listings",
+                        "Could not locate the Draft Listings tab on this window.",
+                    )
             else:
-                if status == "sold":
-                    continue  # default: only unsold if no selection
-            rows.append(r)
-
-        if not rows:
-            return QMessageBox.information(self, "Nothing to export", "No matching items to include.")
-
-        out_path, _ = QFileDialog.getSaveFileName(self, "Save eBay Draft CSV", "ebay-drafts-for-upload.csv", "CSV Files (*.csv)")
-        if not out_path:
-            return
-
-        cat_id = self.category_id_edit.text().strip() or "47140"
-
-        info_rows = [
-            ["#INFO","Version=0.0.2","Template= eBay-draft-listings-template_US","","","","","","",""],
-            ["#INFO","Action and Category ID are required: set Action='Draft' + valid Category ID","","","","","","","","",""],
-            ["#INFO","Complete drafts: https://www.ebay.com/sh/lst/drafts","","","","","","","","",""],
-            ["#INFO","","","","","","","","",""],
-        ]
-        header = [
-            "Action(SiteID=US|Country=US|Currency=USD|Version=1193|CC=UTF-8)",
-            "Custom label (SKU)","Category ID","Title","UPC","Price","Quantity",
-            "Item photo URL","Condition ID","Description","Format"
-        ]
-        cond_map = {
-            "New": 1000, "New with tags": 1000, "New other": 1500, "Open box": 1500, "New (other)":1500,
-            "Manufacturer refurbished": 2000, "Seller refurbished": 2500, "Used": 3000,
-            "Good": 3000, "Very Good": 3000, "Acceptable": 3000, "For parts or not working": 7000
-        }
-        def to_cond_id(s: Optional[str]) -> str:
-            return str(cond_map.get((s or "Used").strip(), 3000))
-        def pick_price(row) -> str:
-            for k in ("listed_price","price","purchase_price","cost"):
-                if k in row and row[k] not in (None,""):
-                    try: return str(float(row[k]))
-                    except Exception: return str(row[k])
-            return ""
-
-        out_rows = []
-        for r in rows:
-            out_rows.append([
-                "Draft",
-                r.get("sku",""),
-                r.get("category_id", cat_id) or cat_id,
-                r.get("title",""),
-                r.get("upc",""),
-                pick_price(r),
-                r.get("quantity", 1) or 1,
-                r.get("image_url",""),
-                to_cond_id(r.get("condition","Used")),
-                r.get("description",""),
-                "FixedPrice"
-            ])
-
-        try:
-            with open(out_path, "w", newline="", encoding="utf-8") as f:
-                w = csv.writer(f); w.writerows(info_rows); w.writerow(header); w.writerows(out_rows)
-            QMessageBox.information(self, "Drafts created", f"Wrote {len(out_rows)} draft rows to:\n{out_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Write failed", str(e))
+                QMessageBox.information(
+                    self,
+                    "Draft Listings",
+                    "Draft tab is not available in this build.",
+                )
+        except Exception as exc:
+            QMessageBox.critical(self, "Draft Listings", f"Unable to open Draft tab: {exc}")

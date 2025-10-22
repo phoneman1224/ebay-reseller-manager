@@ -1,10 +1,13 @@
 """
 Dashboard Tab - Overview of business metrics
 """
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QGroupBox, QGridLayout, QFrame, QSizePolicy, QScrollArea)
 from PyQt6.QtCore import Qt
 from datetime import datetime
+
+
+from .value_helpers import resolve_cost, format_currency
 
 
 class DashboardTab(QWidget):
@@ -292,7 +295,11 @@ class DashboardTab(QWidget):
         if recent_items:
             activity_text += "<br><b>Recently Added to Inventory:</b><br>"
             for item in recent_items:
-                activity_text += f"• {item['title'][:30]} - ${item['purchase_cost']:.2f}<br>"
+                if not isinstance(item, dict):
+                    item = dict(item)
+                title = (item.get('title') or 'Untitled')[:30]
+                cost_text = format_currency(resolve_cost(item))
+                activity_text += f"• {title} - {cost_text}<br>"
         
         if activity_text:
             self.recent_activity_label.setText(activity_text)
