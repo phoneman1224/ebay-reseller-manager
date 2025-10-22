@@ -48,11 +48,35 @@ class TestDatabase(unittest.TestCase):
             'condition': 'New'
         }
         self.db.add_inventory_item(item_data)
-        
+
         # Retrieve items
         items = self.db.get_inventory_items()
         self.assertGreater(len(items), 0)
         self.assertEqual(items[0]['title'], 'Test Item')
+        self.assertTrue(hasattr(items[0], 'get'))
+
+    def test_update_mapping(self):
+        """Mappings should be persisted and retrievable."""
+        mapping = {'title': 'Title', 'sku': 'Custom label (SKU)'}
+        self.db.update_mapping('active_listings', mapping)
+        stored = self.db.get_mapping('active_listings')
+        for key, value in mapping.items():
+            self.assertEqual(stored.get(key), value)
+
+    def test_inventory_items_expose_purchase_cost(self):
+        """Inventory helpers should always expose a purchase_cost alias."""
+        item_id = self.db.add_inventory_item({
+            'title': 'Alias Item',
+            'cost': 12.34,
+            'condition': 'Used'
+        })
+
+        item = self.db.get_inventory_item(item_id)
+        self.assertIn('purchase_cost', item)
+        self.assertAlmostEqual(item['purchase_cost'], 12.34)
+
+        items = self.db.get_inventory_items()
+        self.assertTrue(any(abs(i['purchase_cost'] - 12.34) < 0.0001 for i in items))
     
     def test_add_expense(self):
         """Test adding an expense"""
@@ -94,7 +118,7 @@ class TestDatabase(unittest.TestCase):
             'purchase_cost': 10.00,
             'condition': 'New'
         })
-        
+
         # Mark as sold
         self.db.mark_item_as_sold(
             item_id,
@@ -103,11 +127,41 @@ class TestDatabase(unittest.TestCase):
             platform='eBay',
             fees=3.25
         )
-        
+
         # Verify
         item = self.db.get_inventory_item(item_id)
         self.assertEqual(item['status'], 'Sold')
         self.assertEqual(item['sold_price'], 25.00)
+
+    def test_normalize_orders_respects_mapping(self):
+        """Custom order mappings should drive CSV normalisation."""
+        fd, path = tempfile.mkstemp(suffix='.csv')
+        os.close(fd)
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write("Order Number,Item Title,My Price,My Date,Qty,Custom Label\n")
+                f.write("1234,Test Product,$45.67,01/02/2024,2,SKU-001\n")
+
+            self.db.update_mapping('orders', {
+                'title': 'Item Title',
+                'sku': 'Custom Label',
+                'sold_price': 'My Price',
+                'sold_date': 'My Date',
+                'quantity': 'Qty',
+                'order_number': 'Order Number',
+            })
+
+            result = self.db.normalize_csv_file(path, report_type='orders')
+            rows = result.get('normalized_rows', [])
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertAlmostEqual(row['sold_price'], 45.67)
+            self.assertEqual(row['quantity'], 2)
+            self.assertEqual(row['sku'], 'SKU-001')
+            self.assertEqual(row['order_number'], '1234')
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
 
 
 if __name__ == '__main__':

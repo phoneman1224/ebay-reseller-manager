@@ -179,16 +179,22 @@ class DraftListingsTab(QWidget):
                 if status == "All Non-Sold Items":
                     # Get items that are NOT sold
                     items = self.db.get_inventory_items()
-                    items = [item for item in items if item.get('status', '').lower() != 'sold']
+                    items = [dict(item) if not isinstance(item, dict) else dict(item)
+                             for item in items]
+                    items = [item for item in items if (item.get('status') or '').lower() != 'sold']
                 else:
                     items = self.db.get_items_for_drafts(status)
+                    items = [dict(item) if not isinstance(item, dict) else dict(item)
+                             for item in items]
             else:
                 # Default: show all non-sold items
                 items = self.db.get_inventory_items()
-                items = [item for item in items if item.get('status', '').lower() != 'sold']
-            
+                items = [dict(item) if not isinstance(item, dict) else dict(item)
+                         for item in items]
+                items = [item for item in items if (item.get('status') or '').lower() != 'sold']
+
             self.table.setRowCount(0)
-            
+
             for item in items:
                 row = self.table.rowCount()
                 self.table.insertRow(row)
