@@ -48,11 +48,20 @@ class TestDatabase(unittest.TestCase):
             'condition': 'New'
         }
         self.db.add_inventory_item(item_data)
-        
+
         # Retrieve items
         items = self.db.get_inventory_items()
         self.assertGreater(len(items), 0)
         self.assertEqual(items[0]['title'], 'Test Item')
+        self.assertTrue(hasattr(items[0], 'get'))
+
+    def test_update_mapping(self):
+        """Mappings should be persisted and retrievable."""
+        mapping = {'title': 'Title', 'sku': 'Custom label (SKU)'}
+        self.db.update_mapping('active_listings', mapping)
+        stored = self.db.get_mapping('active_listings')
+        for key, value in mapping.items():
+            self.assertEqual(stored.get(key), value)
     
     def test_add_expense(self):
         """Test adding an expense"""

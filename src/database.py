@@ -49,6 +49,24 @@ class Database:
             self.log_error("Database initialization failed", str(e))
             raise
 
+    def _row_to_dict(self, row: Any) -> Optional[Dict[str, Any]]:
+        """Convert a sqlite3.Row (or similar mapping) to a plain dict."""
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return dict(row)
+        try:
+            return dict(row)
+        except TypeError:
+            # Fall back to using attribute access when the row cannot be
+            # coerced into a dictionary.  This mirrors the previous behaviour
+            # where sqlite3.Row objects were returned directly.
+            return {key: row[key] for key in getattr(row, "keys", lambda: [])()}
+
+    def _rows_to_dicts(self, rows: List[Any]) -> List[Dict[str, Any]]:
+        """Convert an iterable of rows into dictionaries."""
+        return [r for r in (self._row_to_dict(row) for row in rows) if r is not None]
+
     # ---------------------------- schema ----------------------------
     def create_tables(self):
         """Create all necessary tables."""
@@ -229,6 +247,19 @@ class Database:
         row = self.cursor.fetchone()
         return json.loads(row["mapping_json"]) if row else {}
 
+    def update_mapping(self, report_type: str, mapping: Dict[str, Any]):
+        """Persist a mapping for a given report type."""
+        mapping_json = json.dumps(mapping)
+        self.cursor.execute(
+            """
+            INSERT INTO import_mappings (report_type, mapping_json)
+            VALUES (?, ?)
+            ON CONFLICT(report_type) DO UPDATE SET mapping_json=excluded.mapping_json
+            """,
+            (report_type, mapping_json),
+        )
+        self.conn.commit()
+
     # ---------------------------- data access ----------------------------
     def get_inventory_items(self, **kwargs):
         status = kwargs.get("status")
@@ -249,15 +280,15 @@ class Database:
             params += [q, q]
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         self.cursor.execute(f"SELECT * FROM inventory{where} ORDER BY id DESC", params)
-        return self.cursor.fetchall()
+        return self._rows_to_dicts(self.cursor.fetchall())
 
     def get_inventory_item(self, item_id: int):
         self.cursor.execute("SELECT * FROM inventory WHERE id=?", (item_id,))
-        return self.cursor.fetchone()
+        return self._row_to_dict(self.cursor.fetchone())
 
     def get_expenses(self):
         self.cursor.execute("SELECT * FROM expenses ORDER BY date DESC, id DESC")
-        return self.cursor.fetchall()
+        return self._rows_to_dicts(self.cursor.fetchall())
 
     def get_sold_items(self, *args, **kwargs):
         """Return sold inventory items."""
@@ -271,8 +302,26 @@ class Database:
         return float(self.cursor.fetchone()["total"])
 
     def get_inventory_value(self, *args):
-        self.cursor.execute("SELECT COALESCE(SUM(listed_price), 0) AS total FROM inventory WHERE LOWER(status)='listed'")
-        return float(self.cursor.fetchone()["total"])
+        """Return the total value of inventory that has not been sold."""
+        self.cursor.execute(
+            "SELECT status, listed_price, cost, purchase_price FROM inventory "
+            "WHERE status IS NULL OR LOWER(status)!='sold'"
+        )
+        rows = self.cursor.fetchall()
+        total = 0.0
+        for row in rows:
+            status = (row["status"] or "").lower()
+            if status == "listed" and row["listed_price"] is not None:
+                total += float(row["listed_price"])
+                continue
+
+            cost_val = row["cost"]
+            if cost_val is None:
+                cost_val = row["purchase_price"]
+            if cost_val is not None:
+                total += float(cost_val)
+
+        return float(total)
 
     def get_total_revenue(self, *args):
         self.cursor.execute(
@@ -325,12 +374,20 @@ class Database:
         where = " WHERE " + " AND ".join(clauses)
         sql = f"SELECT * FROM inventory{where} ORDER BY sold_date DESC, id DESC"
         self.cursor.execute(sql, params)
-        return self.cursor.fetchall()
+        return self._rows_to_dicts(self.cursor.fetchall())
 
     # ---------------------------- CRUD operations ----------------------------
     def add_inventory_item(self, data: Dict[str, Any]) -> int:
         """Add a new inventory item. Returns the new item's ID."""
         try:
+            data = dict(data or {})
+            # Normalise legacy field names so callers can continue passing
+            # purchase_cost without worrying about the underlying schema.
+            if 'purchase_cost' in data:
+                purchase_cost = data.pop('purchase_cost')
+                if data.get('cost') is None and data.get('purchase_price') is None:
+                    data['cost'] = purchase_cost
+
             columns = []
             values = []
             for key, val in data.items():
@@ -440,9 +497,17 @@ class Database:
         self.cursor.execute("DELETE FROM expenses WHERE id=?", (expense_id,))
         self.conn.commit()
 
-    def mark_item_as_sold(self, item_id: int, sold_price: float, sold_date: str, 
-                          order_number: str = None, quantity: int = None):
+    def mark_item_as_sold(self, item_id: int, sold_price: float = None, sold_date: str = None,
+                          order_number: str = None, quantity: int = None, **kwargs):
         """Mark an inventory item as sold."""
+        # Accept legacy keyword names used throughout the code base/tests.
+        if sold_price is None and "sale_price" in kwargs:
+            sold_price = kwargs.pop("sale_price")
+        if sold_date is None and "sale_date" in kwargs:
+            sold_date = kwargs.pop("sale_date")
+        if quantity is None and "qty" in kwargs:
+            quantity = kwargs.pop("qty")
+
         data = {
             "status": "Sold",
             "sold_price": sold_price,
@@ -475,7 +540,7 @@ class Database:
             "SELECT * FROM inventory WHERE LOWER(status)=LOWER(?) ORDER BY title",
             (status,)
         )
-        return self.cursor.fetchall()
+        return self._rows_to_dicts(self.cursor.fetchall())
 
     def get_condition_id_mapping(self) -> Dict[str, str]:
         """Return eBay condition text to Condition ID mapping."""
