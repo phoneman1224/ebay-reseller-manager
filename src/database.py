@@ -708,10 +708,10 @@ class Database:
         Returns dict with report_type, normalized_rows, warnings
         """
         import csv as csv_module
-        
+
         warnings = []
         normalized_rows = []
-        
+
         # Detect encoding
         try:
             with open(filepath, 'r', encoding='utf-8-sig') as f:
@@ -719,21 +719,71 @@ class Database:
         except Exception:
             with open(filepath, 'r', encoding='latin-1') as f:
                 content = f.read(1024)
-        
-        encoding = 'utf-8-sig'
-        
-        # Read CSV
-        with open(filepath, 'r', encoding=encoding, newline='') as f:
-            # Skip BOM if present
-            reader = csv_module.DictReader(f)
-            rows = list(reader)
-        
-        if not rows:
-            return {"report_type": None, "normalized_rows": [], "warnings": ["No data rows found"]}
-        
-        # Auto-detect report type by examining headers
-        headers = list(rows[0].keys())
 
+        encoding = 'utf-8-sig'
+
+        # Read CSV - scan first few rows to find the header row
+        with open(filepath, 'r', encoding=encoding, newline='') as f:
+            raw_reader = csv_module.reader(f)
+            raw_rows = list(raw_reader)
+
+        if not raw_rows:
+            return {"report_type": None, "normalized_rows": [], "warnings": ["No data rows found"]}
+
+        # Find the header row by scanning first 10 rows for recognizable column names
+        header_row_idx = None
+        headers = None
+
+        for idx, row in enumerate(raw_rows[:10]):  # Check first 10 rows
+            if not row:  # Skip empty rows
+                continue
+
+            # Convert to lowercase for comparison
+            row_lower = [col.lower().strip() if col else '' for col in row]
+
+            # Check if this row looks like headers for active listings or orders
+            # Look for key identifying columns
+            has_order_number = any('order' in col and 'number' in col for col in row_lower)
+            has_item_number = any('item' in col and 'number' in col for col in row_lower)
+            has_sold_for = any('sold' in col or 'price' in col for col in row_lower)
+            has_title = any('title' in col for col in row_lower)
+            has_sku = any('sku' in col or 'custom label' in col for col in row_lower)
+
+            # If we found likely headers, use this row
+            if (has_order_number or has_item_number) and (has_title or has_sku):
+                header_row_idx = idx
+                headers = row
+                break
+
+        if header_row_idx is None:
+            # Fallback: use first non-empty row as headers
+            for idx, row in enumerate(raw_rows[:10]):
+                if row and any(cell for cell in row):
+                    header_row_idx = idx
+                    headers = row
+                    break
+
+        if header_row_idx is None or not headers:
+            return {"report_type": None, "normalized_rows": [], "warnings": ["Could not find header row in CSV"]}
+
+        # Parse the rest of the CSV using the identified headers
+        data_rows = raw_rows[header_row_idx + 1:]  # Skip header and any rows before it
+
+        # Convert to list of dicts
+        rows = []
+        for row in data_rows:
+            if not row or not any(cell for cell in row):  # Skip empty rows
+                continue
+            row_dict = {}
+            for i, header in enumerate(headers):
+                if i < len(row):
+                    row_dict[header] = row[i]
+            rows.append(row_dict)
+
+        if not rows:
+            return {"report_type": None, "normalized_rows": [], "warnings": ["No data rows found after headers"]}
+
+        # Auto-detect report type by examining headers
         if report_type is None:
             # Filter out None/empty headers before calling .lower()
             headers_lower = {h.lower() for h in headers if h}
