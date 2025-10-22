@@ -69,6 +69,49 @@ class Database:
             self.log_error("Database initialization failed", str(e))
             raise
 
+    def _row_to_dict(self, row: Any) -> Optional[Dict[str, Any]]:
+        """Convert a sqlite3.Row (or similar mapping) to a plain dict.
+
+        The application historically relied on a ``purchase_cost`` key being
+        present on inventory records even though the underlying schema stores
+        the value as ``cost`` or ``purchase_price``.  Returning a plain dict is
+        convenient for the PyQt views, but we also need to preserve those legacy
+        aliases so existing widgets do not raise ``KeyError`` when formatting
+        values.  This helper normalises the data before handing it back to the
+        caller.
+        """
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            data = dict(row)
+        else:
+            try:
+                data = dict(row)
+            except TypeError:
+                keys_fn = getattr(row, "keys", lambda: [])
+                data = {key: row[key] for key in keys_fn()}
+
+        # Normalise cost aliases for backwards compatibility.
+        if "purchase_cost" not in data:
+            for alias in ("cost", "purchase_price"):
+                if data.get(alias) not in (None, ""):
+                    try:
+                        data["purchase_cost"] = float(data[alias])
+                    except (TypeError, ValueError):
+                        data["purchase_cost"] = data[alias]
+                    break
+        # Ensure the inverse aliases exist when only purchase_cost is present.
+        if "purchase_cost" in data:
+            for alias in ("cost", "purchase_price"):
+                if alias not in data or data[alias] in (None, ""):
+                    data[alias] = data["purchase_cost"]
+
+        return data
+
+    def _rows_to_dicts(self, rows: List[Any]) -> List[Dict[str, Any]]:
+        """Convert an iterable of rows into dictionaries."""
+        return [r for r in (self._row_to_dict(row) for row in rows) if r is not None]
+
     # ---------------------------- schema ----------------------------
     def create_tables(self):
         """Create all necessary tables."""

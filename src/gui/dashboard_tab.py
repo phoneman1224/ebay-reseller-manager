@@ -302,6 +302,8 @@ class DashboardTab(QWidget):
         if recent_items:
             activity_text += "<br><b>Recently Added to Inventory:</b><br>"
             for item in recent_items:
+                if not isinstance(item, dict):
+                    item = dict(item)
                 title = (item.get('title') or 'Untitled')[:30]
                 cost_text = format_currency(resolve_cost(item))
                 activity_text += f"• {title} - {cost_text}<br>"
