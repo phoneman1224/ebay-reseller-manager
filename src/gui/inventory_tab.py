@@ -62,7 +62,7 @@ class InventoryTab(QWidget):
         self.table.setColumnCount(12)
         self.table.setHorizontalHeaderLabels([
             "ID", "Title", "Category", "SKU", "Brand/Model", "Condition", 
-            "Purchase Cost", "Start Price", "Status", "Storage", "Notes", "Actions"
+            "Purchase Cost", "Listed Price", "Status", "Location", "Notes", "Actions"
         ])
         
         # Configure the header so that columns resize intelligently. Columns
@@ -140,12 +140,12 @@ class InventoryTab(QWidget):
                     cost_val = resolve_cost(item_dict)
                     self.table.setItem(row, 6, QTableWidgetItem(format_currency(cost_val)))
                     
-                    # Safe access to start_price which might not exist
-                    start_price = f"${item_dict['start_price']:.2f}" if item_dict.get('start_price') else "N/A"
-                    self.table.setItem(row, 7, QTableWidgetItem(start_price))
+                    # Listed Price (not start_price)
+                    listed_price = f"${item_dict['listed_price']:.2f}" if item_dict.get('listed_price') else "N/A"
+                    self.table.setItem(row, 7, QTableWidgetItem(listed_price))
                     
                     self.table.setItem(row, 8, QTableWidgetItem(item_dict.get('status') or 'In Stock'))
-                    self.table.setItem(row, 9, QTableWidgetItem(item_dict.get('storage_location') or ''))
+                    self.table.setItem(row, 9, QTableWidgetItem(item_dict.get('location') or ''))
                     self.table.setItem(row, 10, QTableWidgetItem(item_dict.get('notes') or ''))
                     
                     # Actions - Multiple buttons in a widget
@@ -308,7 +308,7 @@ class InventoryTab(QWidget):
         cost_str = format_currency(resolve_cost(item))
         purchase_date = item.get('purchase_date') or 'N/A'
         status = item.get('status') or 'N/A'
-        storage = item.get('storage_location') or 'N/A'
+        storage = item.get('location') or 'N/A'
         description = item.get('description') or 'N/A'
         notes = item.get('notes') or 'N/A'
 
@@ -593,7 +593,7 @@ class AddEditItemDialog(QDialog):
         
         self.storage_input = QLineEdit()
         self.storage_input.setPlaceholderText("e.g., Shelf A3, Box 12")
-        layout.addRow("Storage Location:", self.storage_input)
+        layout.addRow("Location:", self.storage_input)
         
         # Dimensions
         dim_layout = QHBoxLayout()
@@ -668,7 +668,7 @@ class AddEditItemDialog(QDialog):
             self.date_input.setDate(date)
 
         self.source_input.setText(item.get('purchase_source') or '')
-        self.storage_input.setText(item.get('storage_location') or '')
+        self.storage_input.setText(item.get('location') or '')
 
         # Use explicit None checks to allow 0 as a valid value
         if item.get('weight_lbs') is not None:
@@ -705,7 +705,7 @@ class AddEditItemDialog(QDialog):
                 'purchase_cost': self.cost_input.value(),
                 'purchase_date': self.date_input.date().toString("yyyy-MM-dd"),
                 'purchase_source': self.source_input.text().strip() or None,
-                'storage_location': self.storage_input.text().strip() or None,
+                'location': self.storage_input.text().strip() or None,
                 'weight_lbs': self.weight_input.value() if self.weight_input.value() > 0 else None,
                 'length_in': self.length_input.value() if self.length_input.value() > 0 else None,
                 'width_in': self.width_input.value() if self.width_input.value() > 0 else None,

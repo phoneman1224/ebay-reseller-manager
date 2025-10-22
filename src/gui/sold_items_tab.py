@@ -88,10 +88,10 @@ class SoldItemsTab(QWidget):
         self.sold_table = QTableWidget()
         self.sold_table.setColumnCount(9)
         self.sold_table.setHorizontalHeaderLabels([
-            "Sale Date",
+            "Sold Date",
             "Title",
             "Purchase Cost",
-            "Sale Price",
+            "Sold Price",
             "Platform",
             "Fees",
             "Net Profit",
@@ -130,27 +130,24 @@ class SoldItemsTab(QWidget):
                     if not isinstance(item, dict):
                         item = dict(item)
                     
-                    # Sale Date
-                    sale_date = str(item.get('sale_date', 'N/A'))
-                    self.sold_table.setItem(row, 0, QTableWidgetItem(sale_date))
+                    # Sold Date
+                    sold_date = str(item.get('sold_date', 'N/A'))
+                    self.sold_table.setItem(row, 0, QTableWidgetItem(sold_date))
                     
                     # Title
                     title = str(item.get('title', 'Untitled'))
                     self.sold_table.setItem(row, 1, QTableWidgetItem(title))
                     
                     # Purchase Cost
-                    try:
-                        cost = float(item.get('cost', 0))
-                    except (ValueError, TypeError):
-                        cost = 0.0
+                    cost = resolve_cost(item)
                     self.sold_table.setItem(row, 2, QTableWidgetItem(f"${cost:.2f}"))
                     
-                    # Sale Price
+                    # Sold Price
                     try:
-                        sale_price = float(item.get('sale_price', 0))
+                        sold_price = float(item.get('sold_price', 0))
                     except (ValueError, TypeError):
-                        sale_price = 0.0
-                    self.sold_table.setItem(row, 3, QTableWidgetItem(f"${sale_price:.2f}"))
+                        sold_price = 0.0
+                    self.sold_table.setItem(row, 3, QTableWidgetItem(f"${sold_price:.2f}"))
                     
                     # Platform
                     platform = str(item.get('platform', 'eBay'))
@@ -164,7 +161,7 @@ class SoldItemsTab(QWidget):
                     self.sold_table.setItem(row, 5, QTableWidgetItem(f"${fees:.2f}"))
                     
                     # Net Profit
-                    profit = sale_price - cost - fees
+                    profit = sold_price - cost - fees
                     profit_item = QTableWidgetItem(f"${profit:.2f}")
                     
                     # Color code profit
@@ -223,7 +220,7 @@ class SoldItemsTab(QWidget):
                     self.sold_table.setCellWidget(row, 8, actions_btn)
                     
                     # Update totals
-                    total_revenue += sale_price
+                    total_revenue += sold_price
                     total_cost += cost
                     total_fees += fees
                     total_profit += profit
@@ -307,13 +304,13 @@ class SoldItemsTab(QWidget):
         title_label.setStyleSheet("font-weight: bold;")
         form.addRow("Item:", title_label)
         
-        # Sale Price (field stored as sold_price in the inventory table)
+        # Sold Price (field stored as sold_price in the inventory table)
         sale_price_input = QLineEdit()
         sale_price_input.setText(str(item.get('sold_price', '')))
-        sale_price_input.setPlaceholderText("Enter sale price")
-        form.addRow("Sale Price ($):", sale_price_input)
+        sale_price_input.setPlaceholderText("Enter sold price")
+        form.addRow("Sold Price ($):", sale_price_input)
 
-        # Sale Date (field stored as sold_date in the inventory table)
+        # Sold Date (field stored as sold_date in the inventory table)
         sale_date_input = QDateEdit()
         sale_date_str = item.get('sold_date', '')
         if sale_date_str:
@@ -325,7 +322,7 @@ class SoldItemsTab(QWidget):
         else:
             sale_date_input.setDate(QDate.currentDate())
         sale_date_input.setCalendarPopup(True)
-        form.addRow("Sale Date:", sale_date_input)
+        form.addRow("Sold Date:", sale_date_input)
 
         # Platform
         platform_input = QComboBox()
