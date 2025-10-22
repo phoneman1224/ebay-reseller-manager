@@ -10,6 +10,9 @@ from PyQt6.QtCore import Qt, QDate
 from datetime import datetime
 
 
+from .value_helpers import resolve_cost, format_currency
+
+
 class ExpensesTab(QWidget):
     def __init__(self, db):
         super().__init__()
@@ -452,7 +455,9 @@ class AddEditExpenseDialog(QDialog):
         for item in inventory_items:
             # Skip already selected items
             if not any(selected['id'] == item['id'] for selected in self.selected_inventory_items):
-                item_combo.addItem(f"{item['title']} (${item['purchase_cost']:.2f})", item)
+                title = item.get('title') or 'Untitled'
+                cost_text = format_currency(resolve_cost(item))
+                item_combo.addItem(f"{title} ({cost_text})", item)
         layout.addRow("Select Item:", item_combo)
         
         # Amount allocation (optional)

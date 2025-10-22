@@ -10,6 +10,9 @@ from PyQt6.QtGui import QFont, QColor
 from datetime import datetime
 
 
+from .value_helpers import resolve_cost
+
+
 class SoldItemsTab(QWidget):
     def __init__(self, db):
         super().__init__()
@@ -334,7 +337,7 @@ class SoldItemsTab(QWidget):
             """Recalculate profit based on current inputs."""
             try:
                 # Use purchase_cost as the base cost of goods sold.
-                cost = float(item.get('purchase_cost', 0))
+                cost = resolve_cost(item) or 0.0
                 sale_price = float(sale_price_input.text() or 0)
                 fees_value = float(fees_input.text() or 0)
                 profit = sale_price - cost - fees_value
