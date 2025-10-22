@@ -48,7 +48,7 @@ class Database:
         "title": ["Item Title", "Title"],
         "sku": ["Custom Label", "Custom label (SKU)", "SKU"],
         "sold_price": ["Sold For", "Total Price", "Sale Price", "Sold Price"],
-        "sold_date": ["Sale Date", "Paid on Date", "Paid On Date"],
+        "sold_date": ["Sold Date", "Sale Date", "Paid on Date", "Paid On Date"],
         "quantity": ["Quantity", "Qty"],
         "order_number": ["Order Number", "Sales Record Number"],
     }
@@ -377,8 +377,18 @@ class Database:
         return self.get_inventory_items(**kwargs)
 
     # ---------------------------- dashboard metrics ----------------------------
-    def get_total_deductible_expenses(self, *args):
-        self.cursor.execute("SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE tax_deductible=1")
+    def get_total_deductible_expenses(self, year: Optional[int] = None) -> float:
+        clauses = ["tax_deductible=1"]
+        params: List[Any] = []
+        if year:
+            clauses.append("substr(date, 1, 4)=?")
+            params.append(str(year))
+
+        where = " WHERE " + " AND ".join(clauses)
+        self.cursor.execute(
+            f"SELECT COALESCE(SUM(amount), 0) AS total FROM expenses{where}",
+            params,
+        )
         return float(self.cursor.fetchone()["total"])
 
     def get_inventory_value(self, *args):
@@ -403,36 +413,76 @@ class Database:
 
         return float(total)
 
-    def get_total_revenue(self, *args):
+    def get_total_revenue(self, year: Optional[int] = None) -> float:
+        clauses = ["LOWER(status)='sold'"]
+        params: List[Any] = []
+        if year:
+            clauses.append("substr(sold_date, 1, 4)=?")
+            params.append(str(year))
+
+        where = " WHERE " + " AND ".join(clauses)
         self.cursor.execute(
-            "SELECT COALESCE(SUM(sold_price * COALESCE(quantity,1)), 0) AS total FROM inventory WHERE LOWER(status)='sold'"
+            f"SELECT COALESCE(SUM(sold_price * COALESCE(quantity,1)), 0) AS total FROM inventory{where}",
+            params,
         )
         return float(self.cursor.fetchone()["total"])
 
-    def get_total_profit(self, *args):
+    def get_total_profit(self, year: Optional[int] = None) -> float:
+        clauses = ["LOWER(status)='sold'"]
+        params: List[Any] = []
+        if year:
+            clauses.append("substr(sold_date, 1, 4)=?")
+            params.append(str(year))
+
+        where = " WHERE " + " AND ".join(clauses)
         self.cursor.execute(
-            """
+            f"""
             SELECT
                 COALESCE(SUM(COALESCE(sold_price,0) * COALESCE(quantity,1)), 0)
                 - COALESCE(SUM(COALESCE(
-                    CASE 
+                    CASE
                         WHEN cost IS NOT NULL THEN cost
-                        ELSE purchase_price 
+                        ELSE purchase_price
                     END,0) * COALESCE(quantity,1)), 0)
                 AS profit
-            FROM inventory
-            WHERE LOWER(status)='sold'
-            """
+            FROM inventory{where}
+            """,
+            params,
         )
         return float(self.cursor.fetchone()["profit"])
 
-    def get_expense_breakdown(self, *args) -> Dict[str, float]:
+    def get_expense_breakdown(self, year: Optional[int] = None) -> List[Dict[str, Any]]:
         """Return total expenses by category."""
+
+        clauses: List[str] = []
+        params: List[Any] = []
+        if year:
+            clauses.append("substr(date, 1, 4)=?")
+            params.append(str(year))
+
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         self.cursor.execute(
-            "SELECT category, COALESCE(SUM(amount), 0) AS total FROM expenses GROUP BY category ORDER BY total DESC"
+            f"""
+            SELECT
+                COALESCE(category, 'Uncategorized') AS category,
+                COUNT(*) AS count,
+                COALESCE(SUM(amount), 0) AS total
+            FROM expenses
+            {where}
+            GROUP BY COALESCE(category, 'Uncategorized')
+            ORDER BY total DESC
+            """,
+            params,
         )
         rows = self.cursor.fetchall()
-        return {r["category"]: float(r["total"]) for r in rows if r["category"]}
+        return [
+            {
+                "category": row["category"],
+                "count": row["count"],
+                "total": float(row["total"]),
+            }
+            for row in rows
+        ]
 
     def get_sales(self, *args, **kwargs):
         """Return sold items (optionally filtered)."""
@@ -497,10 +547,22 @@ class Database:
         """Update an existing inventory item."""
         if not data:
             return
-        
+
+        data = dict(data)
+
+        # Normalise legacy aliases so callers can continue to pass purchase_cost
+        # without knowing that the column is stored as ``cost`` in SQLite.  If
+        # the structured cost columns are already supplied we simply drop the
+        # alias; otherwise we funnel the value into ``cost`` so the update does
+        # not fail with "no such column".
+        if "purchase_cost" in data:
+            purchase_cost = data.pop("purchase_cost")
+            if "cost" not in data and "purchase_price" not in data:
+                data["cost"] = purchase_cost
+
         set_clause = ",".join(f"{k}=?" for k in data.keys())
         values = list(data.values()) + [item_id]
-        
+
         sql = f"UPDATE inventory SET {set_clause} WHERE id=?"
         self.cursor.execute(sql, values)
         self.conn.commit()

@@ -89,7 +89,10 @@ class TestDatabase(unittest.TestCase):
         expense_id = self.db.add_expense(expense_data)
         self.assertIsNotNone(expense_id)
         self.assertGreater(expense_id, 0)
-    
+
+        breakdown = self.db.get_expense_breakdown()
+        self.assertTrue(any(entry['category'] == 'Shipping Supplies' for entry in breakdown))
+
     def test_get_inventory_value(self):
         """Test calculating inventory value"""
         # Add test items
@@ -132,6 +135,56 @@ class TestDatabase(unittest.TestCase):
         item = self.db.get_inventory_item(item_id)
         self.assertEqual(item['status'], 'Sold')
         self.assertEqual(item['sold_price'], 25.00)
+
+    def test_update_inventory_item_accepts_purchase_cost(self):
+        """Updating with purchase_cost should persist cost values."""
+        item_id = self.db.add_inventory_item({
+            'title': 'Cost Alias',
+            'purchase_cost': 5.00,
+            'condition': 'Used'
+        })
+
+        self.db.update_inventory_item(item_id, {
+            'title': 'Updated Cost Alias',
+            'purchase_cost': 7.25,
+        })
+
+        item = self.db.get_inventory_item(item_id)
+        self.assertEqual(item['title'], 'Updated Cost Alias')
+        self.assertAlmostEqual(item['purchase_cost'], 7.25)
+
+    def test_import_orders_marks_existing_inventory_as_sold(self):
+        """Orders CSV import should update matching inventory records."""
+        item_id = self.db.add_inventory_item({
+            'title': 'Widget',
+            'sku': 'SKU-123',
+            'purchase_cost': 9.99,
+            'status': 'In Stock'
+        })
+
+        fd, path = tempfile.mkstemp(suffix='.csv')
+        os.close(fd)
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write('Order Number,Item Title,Sold For,Sold Date,Quantity,Custom Label\n')
+                f.write('1001,Widget,$24.95,02/15/2025,1,SKU-123\n')
+
+            result = self.db.normalize_csv_file(path)
+            self.assertEqual(result['report_type'], 'orders')
+
+            rows = result['normalized_rows']
+            self.assertEqual(len(rows), 1)
+
+            stats = self.db.import_normalized('orders', rows)
+            self.assertGreaterEqual(stats['updated'], 1)
+
+            item = self.db.get_inventory_item(item_id)
+            self.assertEqual(item['status'], 'Sold')
+            self.assertAlmostEqual(item['sold_price'], 24.95, places=2)
+            self.assertTrue((item.get('sold_date') or '').startswith('2025-02-15'))
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
 
     def test_normalize_orders_respects_mapping(self):
         """Custom order mappings should drive CSV normalisation."""

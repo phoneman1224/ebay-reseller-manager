@@ -216,18 +216,18 @@ class DashboardTab(QWidget):
         
         # Revenue metrics
         total_revenue = self.db.get_total_revenue(current_year)
-        sales = self.db.get_sales()
-        year_sales = [s for s in sales if s['sale_date'].startswith(str(current_year))]
-        sales_count = len(year_sales)
+        sales = [dict(row) for row in self.db.get_sales()]
+        year_sales = [s for s in sales if (s.get('sold_date') or '').startswith(str(current_year))]
+        sales_count = sum(int(s.get('quantity') or 1) for s in year_sales)
         
         self.revenue_card.main_label.setText(f"${total_revenue:.2f}")
         # Display sales count with "YTD" abbreviation for Year‑To‑Date
         self.revenue_card.sub_label.setText(f"{sales_count} sales YTD")
         
         # Expenses metrics
-        all_expenses = self.db.get_expenses()
-        year_expenses = [e for e in all_expenses if e['date'].startswith(str(current_year))]
-        total_expenses = sum([e['amount'] for e in year_expenses])
+        all_expenses = [dict(expense) for expense in self.db.get_expenses()]
+        year_expenses = [e for e in all_expenses if (e.get('date') or '').startswith(str(current_year))]
+        total_expenses = sum(float(e.get('amount') or 0) for e in year_expenses)
         deductible_expenses = self.db.get_total_deductible_expenses(current_year)
         
         self.expenses_card.main_label.setText(f"${total_expenses:.2f}")
@@ -274,29 +274,34 @@ class DashboardTab(QWidget):
         expense_breakdown = self.db.get_expense_breakdown(current_year)
         if expense_breakdown:
             breakdown_text = "<b>Top Categories:</b><br>"
-            for category in expense_breakdown[:5]:  # Top 5
-                breakdown_text += f"• {category['category']}: ${category['total']:.2f} ({category['count']} expenses)<br>"
+            for entry in expense_breakdown[:5]:  # Top 5
+                breakdown_text += (
+                    f"• {entry['category']}: ${entry['total']:.2f} "
+                    f"({entry['count']} expenses)<br>"
+                )
             self.expense_breakdown_label.setText(breakdown_text)
         else:
             self.expense_breakdown_label.setText("No expenses recorded yet")
         
         # Recent activity
-        recent_sales = self.db.get_sales()[:5]
-        recent_items = self.db.get_inventory_items()[:5]
-        
+        recent_sales = sales[:5]
+        recent_items = [dict(item) for item in self.db.get_inventory_items()[:5]]
+
         activity_text = ""
         if recent_sales:
             activity_text += "<b>Recent Sales:</b><br>"
             for sale in recent_sales:
-                item = self.db.get_inventory_item(sale['inventory_id'])
-                if item:
-                    activity_text += f"• {item['title'][:30]}: ${sale['sale_price']:.2f} ({sale['sale_date']})<br>"
-        
+                title = (sale.get('title') or 'Untitled')[:30]
+                sold_price = sale.get('sold_price')
+                sold_price_text = f"${sold_price:.2f}" if isinstance(sold_price, (int, float)) else "N/A"
+                sold_date = sale.get('sold_date') or 'N/A'
+                quantity = int(sale.get('quantity') or 1)
+                quantity_suffix = f" x{quantity}" if quantity > 1 else ""
+                activity_text += f"• {title}{quantity_suffix}: {sold_price_text} ({sold_date})<br>"
+
         if recent_items:
             activity_text += "<br><b>Recently Added to Inventory:</b><br>"
             for item in recent_items:
-                if not isinstance(item, dict):
-                    item = dict(item)
                 title = (item.get('title') or 'Untitled')[:30]
                 cost_text = format_currency(resolve_cost(item))
                 activity_text += f"• {title} - {cost_text}<br>"
