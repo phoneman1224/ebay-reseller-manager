@@ -1,10 +1,11 @@
 """
 Inventory Tab - Manage inventory items
 """
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QTableWidget, QTableWidgetItem, QLabel, QDialog,
                              QFormLayout, QLineEdit, QTextEdit, QComboBox,
-                             QDateEdit, QDoubleSpinBox, QMessageBox, QHeaderView)
+                             QDateEdit, QDoubleSpinBox, QMessageBox, QHeaderView,
+                             QFileDialog)
 from PyQt6.QtCore import Qt, QDate
 from datetime import datetime
 
@@ -43,6 +44,11 @@ class InventoryTab(QWidget):
         import_btn = QPushButton("📄 Import from Excel")
         import_btn.clicked.connect(self.show_import_dialog)
         header.addWidget(import_btn)
+
+        refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn.setToolTip("Reload inventory data from the database")
+        refresh_btn.clicked.connect(self.refresh_data)
+        header.addWidget(refresh_btn)
         
         layout.addLayout(header)
         
@@ -229,6 +235,15 @@ class InventoryTab(QWidget):
         except Exception as e:
             print(f"Error refreshing data: {e}")
             QMessageBox.warning(self, "Error", f"Error loading inventory: {str(e)}")
+
+    # MainWindow expects inventory tabs to expose a load_inventory method so
+    # that it can refresh the view whenever the tab becomes active. The
+    # previous implementation only provided refresh_data, which meant the tab
+    # never reloaded after an import performed elsewhere in the app. Providing
+    # this thin wrapper keeps backwards compatibility with callers that expect
+    # load_inventory.
+    def load_inventory(self):
+        self.refresh_data()
     
     def update_statistics(self, items):
         """Update the statistics display"""
@@ -360,11 +375,53 @@ class InventoryTab(QWidget):
             self.refresh_data()
     
     def show_import_dialog(self):
-        """Show the Excel import dialog"""
-        from gui.excel_import import ExcelImportDialog
-        dialog = ExcelImportDialog(parent=self, db=self.db)
-        dialog.exec()
-        self.refresh_data()
+        """Import an Active Listings CSV and refresh the table."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Active Listings CSV",
+            "",
+            "CSV Files (*.csv)"
+        )
+
+        if not filepath:
+            return
+
+        try:
+            result = self.db.normalize_csv_file(filepath, report_type="active_listings")
+            rows = result.get("normalized_rows", [])
+            warnings = result.get("warnings", [])
+
+            if not rows:
+                warning_text = "No importable rows were found in the selected file."
+                if warnings:
+                    warning_text += "\n\n" + "\n".join(warnings)
+                QMessageBox.warning(self, "No Data Imported", warning_text)
+                return
+
+            stats = self.db.import_normalized("active_listings", rows)
+
+            message_lines = [
+                "Active listings imported successfully!",
+                f"Updated items: {stats.get('updated', 0)}",
+                f"New items: {stats.get('inserted', 0)}",
+            ]
+            if stats.get("skipped"):
+                message_lines.append(f"Skipped rows: {stats['skipped']}")
+            if stats.get("errors"):
+                message_lines.append(f"Errors: {stats['errors']}")
+            if warnings:
+                message_lines.append("\nWarnings:")
+                message_lines.extend(warnings)
+
+            QMessageBox.information(self, "Import Complete", "\n".join(message_lines))
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Import Failed",
+                f"An error occurred while importing the CSV file:\n{str(e)}"
+            )
+        finally:
+            self.refresh_data()
     
     def mark_as_sold_dialog(self, item_id):
         """Show dialog to mark item as sold"""

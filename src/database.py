@@ -271,8 +271,26 @@ class Database:
         return float(self.cursor.fetchone()["total"])
 
     def get_inventory_value(self, *args):
-        self.cursor.execute("SELECT COALESCE(SUM(listed_price), 0) AS total FROM inventory WHERE LOWER(status)='listed'")
-        return float(self.cursor.fetchone()["total"])
+        """Return the total value of inventory that has not been sold."""
+        self.cursor.execute(
+            "SELECT status, listed_price, cost, purchase_price FROM inventory "
+            "WHERE status IS NULL OR LOWER(status)!='sold'"
+        )
+        rows = self.cursor.fetchall()
+        total = 0.0
+        for row in rows:
+            status = (row["status"] or "").lower()
+            if status == "listed" and row["listed_price"] is not None:
+                total += float(row["listed_price"])
+                continue
+
+            cost_val = row["cost"]
+            if cost_val is None:
+                cost_val = row["purchase_price"]
+            if cost_val is not None:
+                total += float(cost_val)
+
+        return float(total)
 
     def get_total_revenue(self, *args):
         self.cursor.execute(
@@ -331,6 +349,14 @@ class Database:
     def add_inventory_item(self, data: Dict[str, Any]) -> int:
         """Add a new inventory item. Returns the new item's ID."""
         try:
+            data = dict(data or {})
+            # Normalise legacy field names so callers can continue passing
+            # purchase_cost without worrying about the underlying schema.
+            if 'purchase_cost' in data:
+                purchase_cost = data.pop('purchase_cost')
+                if data.get('cost') is None and data.get('purchase_price') is None:
+                    data['cost'] = purchase_cost
+
             columns = []
             values = []
             for key, val in data.items():
@@ -440,9 +466,17 @@ class Database:
         self.cursor.execute("DELETE FROM expenses WHERE id=?", (expense_id,))
         self.conn.commit()
 
-    def mark_item_as_sold(self, item_id: int, sold_price: float, sold_date: str, 
-                          order_number: str = None, quantity: int = None):
+    def mark_item_as_sold(self, item_id: int, sold_price: float = None, sold_date: str = None,
+                          order_number: str = None, quantity: int = None, **kwargs):
         """Mark an inventory item as sold."""
+        # Accept legacy keyword names used throughout the code base/tests.
+        if sold_price is None and "sale_price" in kwargs:
+            sold_price = kwargs.pop("sale_price")
+        if sold_date is None and "sale_date" in kwargs:
+            sold_date = kwargs.pop("sale_date")
+        if quantity is None and "qty" in kwargs:
+            quantity = kwargs.pop("qty")
+
         data = {
             "status": "Sold",
             "sold_price": sold_price,
