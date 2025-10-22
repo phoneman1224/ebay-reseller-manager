@@ -49,6 +49,24 @@ class Database:
             self.log_error("Database initialization failed", str(e))
             raise
 
+    def _row_to_dict(self, row: Any) -> Optional[Dict[str, Any]]:
+        """Convert a sqlite3.Row (or similar mapping) to a plain dict."""
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return dict(row)
+        try:
+            return dict(row)
+        except TypeError:
+            # Fall back to using attribute access when the row cannot be
+            # coerced into a dictionary.  This mirrors the previous behaviour
+            # where sqlite3.Row objects were returned directly.
+            return {key: row[key] for key in getattr(row, "keys", lambda: [])()}
+
+    def _rows_to_dicts(self, rows: List[Any]) -> List[Dict[str, Any]]:
+        """Convert an iterable of rows into dictionaries."""
+        return [r for r in (self._row_to_dict(row) for row in rows) if r is not None]
+
     # ---------------------------- schema ----------------------------
     def create_tables(self):
         """Create all necessary tables."""
@@ -229,6 +247,19 @@ class Database:
         row = self.cursor.fetchone()
         return json.loads(row["mapping_json"]) if row else {}
 
+    def update_mapping(self, report_type: str, mapping: Dict[str, Any]):
+        """Persist a mapping for a given report type."""
+        mapping_json = json.dumps(mapping)
+        self.cursor.execute(
+            """
+            INSERT INTO import_mappings (report_type, mapping_json)
+            VALUES (?, ?)
+            ON CONFLICT(report_type) DO UPDATE SET mapping_json=excluded.mapping_json
+            """,
+            (report_type, mapping_json),
+        )
+        self.conn.commit()
+
     # ---------------------------- data access ----------------------------
     def get_inventory_items(self, **kwargs):
         status = kwargs.get("status")
@@ -249,15 +280,15 @@ class Database:
             params += [q, q]
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         self.cursor.execute(f"SELECT * FROM inventory{where} ORDER BY id DESC", params)
-        return self.cursor.fetchall()
+        return self._rows_to_dicts(self.cursor.fetchall())
 
     def get_inventory_item(self, item_id: int):
         self.cursor.execute("SELECT * FROM inventory WHERE id=?", (item_id,))
-        return self.cursor.fetchone()
+        return self._row_to_dict(self.cursor.fetchone())
 
     def get_expenses(self):
         self.cursor.execute("SELECT * FROM expenses ORDER BY date DESC, id DESC")
-        return self.cursor.fetchall()
+        return self._rows_to_dicts(self.cursor.fetchall())
 
     def get_sold_items(self, *args, **kwargs):
         """Return sold inventory items."""
@@ -343,7 +374,7 @@ class Database:
         where = " WHERE " + " AND ".join(clauses)
         sql = f"SELECT * FROM inventory{where} ORDER BY sold_date DESC, id DESC"
         self.cursor.execute(sql, params)
-        return self.cursor.fetchall()
+        return self._rows_to_dicts(self.cursor.fetchall())
 
     # ---------------------------- CRUD operations ----------------------------
     def add_inventory_item(self, data: Dict[str, Any]) -> int:
@@ -509,7 +540,7 @@ class Database:
             "SELECT * FROM inventory WHERE LOWER(status)=LOWER(?) ORDER BY title",
             (status,)
         )
-        return self.cursor.fetchall()
+        return self._rows_to_dicts(self.cursor.fetchall())
 
     def get_condition_id_mapping(self) -> Dict[str, str]:
         """Return eBay condition text to Condition ID mapping."""
