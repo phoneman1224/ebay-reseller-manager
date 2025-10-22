@@ -111,10 +111,11 @@ class SoldItemsTab(QWidget):
         
         layout.addWidget(self.sold_table)
     
-    def load_sold_items(self):
-        """Load sold items from database"""
+    def load_sold_items(self, date_from=None, date_to=None):
+        """Load sold items from database with optional date filtering"""
         try:
-            items = self.db.get_sold_items()
+            # Use get_sales for better filtering support
+            items = self.db.get_sales(date_from=date_from, date_to=date_to)
             
             self.sold_table.setRowCount(len(items))
             
@@ -253,12 +254,31 @@ class SoldItemsTab(QWidget):
     def apply_filters(self):
         """Apply date filters to sold items"""
         filter_type = self.filter_combo.currentText()
-        
-        # For now, just reload - we can add filtering logic later
-        self.load_sold_items()
-        
-        # TODO: Implement actual filtering in database.py
-        # based on filter_type
+
+        # Calculate date range based on filter type
+        from datetime import datetime, timedelta
+        from dateutil.relativedelta import relativedelta
+
+        date_from = None
+        date_to = None
+        today = datetime.now().date()
+
+        if filter_type == "This Month":
+            # First day of current month to today
+            date_from = today.replace(day=1).strftime("%Y-%m-%d")
+            date_to = today.strftime("%Y-%m-%d")
+        elif filter_type == "Last 30 Days":
+            # 30 days ago to today
+            date_from = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+            date_to = today.strftime("%Y-%m-%d")
+        elif filter_type == "This Year":
+            # January 1st of current year to today
+            date_from = today.replace(month=1, day=1).strftime("%Y-%m-%d")
+            date_to = today.strftime("%Y-%m-%d")
+        # else: "All Sales" - no date filtering (date_from and date_to remain None)
+
+        # Load sold items with date filter
+        self.load_sold_items(date_from=date_from, date_to=date_to)
     
     def edit_sale(self, item_id):
         """Edit sale details"""
@@ -280,9 +300,9 @@ class SoldItemsTab(QWidget):
         
         # Form
         form = QFormLayout()
-        
-        # Title (read-only)
-        title_label = QLabel(item['title'])
+
+        # Title (read-only) - use .get() for defensive access
+        title_label = QLabel(item.get('title', 'Untitled'))
         title_label.setWordWrap(True)
         title_label.setStyleSheet("font-weight: bold;")
         form.addRow("Item:", title_label)
