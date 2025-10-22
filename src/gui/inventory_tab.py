@@ -4,8 +4,7 @@ Inventory Tab - Manage inventory items
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QTableWidget, QTableWidgetItem, QLabel, QDialog,
                              QFormLayout, QLineEdit, QTextEdit, QComboBox,
-                             QDateEdit, QDoubleSpinBox, QMessageBox, QHeaderView,
-                             QFileDialog)
+                             QDateEdit, QDoubleSpinBox, QMessageBox, QHeaderView)
 from PyQt6.QtCore import Qt, QDate
 from datetime import datetime
 
@@ -43,10 +42,6 @@ class InventoryTab(QWidget):
         add_btn = QPushButton("➕ Add Item")
         add_btn.clicked.connect(self.add_item_dialog)
         header.addWidget(add_btn)
-        
-        import_btn = QPushButton("📄 Import from Excel")
-        import_btn.clicked.connect(self.show_import_dialog)
-        header.addWidget(import_btn)
 
         refresh_btn = QPushButton("🔄 Refresh")
         refresh_btn.setToolTip("Reload inventory data from the database")
@@ -308,14 +303,14 @@ class InventoryTab(QWidget):
         brand = item.get('brand') or 'N/A'
         model = item.get('model') or 'N/A'
         condition = item.get('condition') or 'N/A'
-        
+
         # Purchase cost formatting - try different cost fields
         cost_str = format_currency(resolve_cost(item))
-        purchase_date = item['purchase_date'] if item.get('purchase_date') else 'N/A'
+        purchase_date = item.get('purchase_date') or 'N/A'
         status = item.get('status') or 'N/A'
-        storage = item['storage_location'] if item.get('storage_location') else 'N/A'
-        description = item['description'] if item.get('description') else 'N/A'
-        notes = item['notes'] if item.get('notes') else 'N/A'
+        storage = item.get('storage_location') or 'N/A'
+        description = item.get('description') or 'N/A'
+        notes = item.get('notes') or 'N/A'
 
         # Build the HTML details string
         details = f"""
@@ -366,56 +361,7 @@ class InventoryTab(QWidget):
             item_id = int(self.table.item(current_row, 0).text())
             self.db.delete_inventory_item(item_id)
             self.refresh_data()
-    
-    def show_import_dialog(self):
-        """Import an Active Listings CSV and refresh the table."""
-        filepath, _ = QFileDialog.getOpenFileName(
-            self,
-            "Import Active Listings CSV",
-            "",
-            "CSV Files (*.csv)"
-        )
 
-        if not filepath:
-            return
-
-        try:
-            result = self.db.normalize_csv_file(filepath, report_type="active_listings")
-            rows = result.get("normalized_rows", [])
-            warnings = result.get("warnings", [])
-
-            if not rows:
-                warning_text = "No importable rows were found in the selected file."
-                if warnings:
-                    warning_text += "\n\n" + "\n".join(warnings)
-                QMessageBox.warning(self, "No Data Imported", warning_text)
-                return
-
-            stats = self.db.import_normalized("active_listings", rows)
-
-            message_lines = [
-                "Active listings imported successfully!",
-                f"Updated items: {stats.get('updated', 0)}",
-                f"New items: {stats.get('inserted', 0)}",
-            ]
-            if stats.get("skipped"):
-                message_lines.append(f"Skipped rows: {stats['skipped']}")
-            if stats.get("errors"):
-                message_lines.append(f"Errors: {stats['errors']}")
-            if warnings:
-                message_lines.append("\nWarnings:")
-                message_lines.extend(warnings)
-
-            QMessageBox.information(self, "Import Complete", "\n".join(message_lines))
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Import Failed",
-                f"An error occurred while importing the CSV file:\n{str(e)}"
-            )
-        finally:
-            self.refresh_data()
-    
     def mark_as_sold_dialog(self, item_id):
         """Show dialog to mark item as sold"""
         item = self.db.get_inventory_item(item_id)
@@ -724,13 +670,14 @@ class AddEditItemDialog(QDialog):
         self.source_input.setText(item.get('purchase_source') or '')
         self.storage_input.setText(item.get('storage_location') or '')
 
-        if item.get('weight_lbs'):
+        # Use explicit None checks to allow 0 as a valid value
+        if item.get('weight_lbs') is not None:
             self.weight_input.setValue(item['weight_lbs'])
-        if item.get('length_in'):
+        if item.get('length_in') is not None:
             self.length_input.setValue(item['length_in'])
-        if item.get('width_in'):
+        if item.get('width_in') is not None:
             self.width_input.setValue(item['width_in'])
-        if item.get('height_in'):
+        if item.get('height_in') is not None:
             self.height_input.setValue(item['height_in'])
 
         self.description_input.setPlainText(item.get('description') or '')

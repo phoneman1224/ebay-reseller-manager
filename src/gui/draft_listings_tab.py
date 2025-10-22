@@ -216,11 +216,12 @@ class DraftListingsTab(QWidget):
                 self.table.setItem(row, 1, QTableWidgetItem(str(item.get("title", ""))))
                 self.table.setItem(row, 2, QTableWidgetItem(str(item.get("sku", ""))))
                 self.table.setItem(row, 3, QTableWidgetItem(str(item.get("condition", ""))))
-                
-                cost = item.get("purchase_price") or item.get("cost") or 0
+
+                # Ensure numeric values with explicit type conversion
+                cost = float(item.get("purchase_price") or item.get("cost") or 0)
                 self.table.setItem(row, 4, QTableWidgetItem(f"${cost:.2f}"))
-                
-                price = item.get("listed_price") or 0
+
+                price = float(item.get("listed_price") or 0)
                 self.table.setItem(row, 5, QTableWidgetItem(f"${price:.2f}"))
                 
                 category = item.get("category_id", "")

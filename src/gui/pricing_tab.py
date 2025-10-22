@@ -164,7 +164,8 @@ class PricingTab(QWidget):
             if not isinstance(item, dict):
                 item = dict(item)
             cost = item.get('cost') or item.get('purchase_price') or 0
-            display_text = f"{item['title'][:40]} (${cost:.2f})"
+            title = item.get('title', 'Untitled')[:40]
+            display_text = f"{title} (${cost:.2f})"
             self.item_combo.addItem(display_text, item)
     
     def on_item_selected(self):
@@ -173,14 +174,15 @@ class PricingTab(QWidget):
         if item_data:
             cost = item_data.get('cost') or item_data.get('purchase_price') or 0
             self.cost_input.setValue(cost)
-            if item_data.get('weight_lbs'):
-                self.weight_input.setValue(float(item_data['weight_lbs']))
-            if item_data.get('length_in'):
-                self.length_input.setValue(int(item_data['length_in']))
-            if item_data.get('width_in'):
-                self.width_input.setValue(int(item_data['width_in']))
-            if item_data.get('height_in'):
-                self.height_input.setValue(int(item_data['height_in']))
+            # Use explicit None checks to allow 0 as a valid value
+            if item_data.get('weight_lbs') is not None:
+                self.weight_input.setValue(float(item_data.get('weight_lbs')))
+            if item_data.get('length_in') is not None:
+                self.length_input.setValue(int(item_data.get('length_in')))
+            if item_data.get('width_in') is not None:
+                self.width_input.setValue(int(item_data.get('width_in')))
+            if item_data.get('height_in') is not None:
+                self.height_input.setValue(int(item_data.get('height_in')))
             self.calculate_prices()
     
     def on_profit_type_changed(self):

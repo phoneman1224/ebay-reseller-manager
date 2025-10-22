@@ -110,25 +110,27 @@ class ExpensesTab(QWidget):
         self.table.setRowCount(len(expenses))
         
         for row, expense in enumerate(expenses):
-            # ID
-            self.table.setItem(row, 0, QTableWidgetItem(str(expense['id'])))
+            # ID - use .get() for defensive access
+            self.table.setItem(row, 0, QTableWidgetItem(str(expense.get('id', ''))))
             # Date
-            self.table.setItem(row, 1, QTableWidgetItem(expense['date'] or ''))
-            # Amount
-            self.table.setItem(row, 2, QTableWidgetItem(f"${expense['amount']:.2f}"))
+            self.table.setItem(row, 1, QTableWidgetItem(expense.get('date') or ''))
+            # Amount - ensure proper type conversion
+            amount = float(expense.get('amount', 0))
+            self.table.setItem(row, 2, QTableWidgetItem(f"${amount:.2f}"))
             # Category
-            self.table.setItem(row, 3, QTableWidgetItem(expense['category'] or ''))
+            self.table.setItem(row, 3, QTableWidgetItem(expense.get('category') or ''))
             # Connected inventory items (count)
             try:
-                item_count = self.db.get_expense_inventory_count(expense['id'])
+                item_count = self.db.get_expense_inventory_count(expense.get('id', 0))
             except Exception:
                 item_count = 0
             self.table.setItem(row, 4, QTableWidgetItem(str(item_count)))
-            
-            # Tax deductible indicator
-            deductible = "✓ Yes" if expense['tax_deductible'] else "✗ No"
+
+            # Tax deductible indicator - use .get() with default False
+            is_deductible = expense.get('tax_deductible', False)
+            deductible = "✓ Yes" if is_deductible else "✗ No"
             deductible_item = QTableWidgetItem(deductible)
-            if expense['tax_deductible']:
+            if is_deductible:
                 deductible_item.setForeground(Qt.GlobalColor.darkGreen)
             else:
                 deductible_item.setForeground(Qt.GlobalColor.red)
@@ -139,8 +141,9 @@ class ExpensesTab(QWidget):
     
     def update_statistics(self, expenses):
         """Update the statistics display"""
-        total_expenses = sum([e['amount'] for e in expenses])
-        deductible = sum([e['amount'] for e in expenses if e['tax_deductible']])
+        # Use defensive .get() with type conversion for robustness
+        total_expenses = sum([float(e.get('amount', 0)) for e in expenses])
+        deductible = sum([float(e.get('amount', 0)) for e in expenses if e.get('tax_deductible', False)])
         non_deductible = total_expenses - deductible
         
         current_year = datetime.now().year
