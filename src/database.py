@@ -786,7 +786,7 @@ class Database:
         if not rows:
             return {"report_type": None, "normalized_rows": [], "warnings": ["No data rows found after headers"]}
 
-        # Auto-detect report type by examining headers
+    # Auto-detect report type by examining headers (case-insensitive) with tie-breaker preferring orders
         if report_type is None:
             # Filter out None/empty headers before calling .lower()
             headers_lower = {h.lower() for h in headers if h}
@@ -794,13 +794,19 @@ class Database:
             def has_any(options: List[str]) -> bool:
                 return any(opt.lower() in headers_lower for opt in options if opt)
 
-            if has_any(["Item number", "Item Number"]) and has_any(self.ACTIVE_IMPORT_DEFAULTS["sku"]):
+            is_active = has_any(["Item number", "Item Number"]) and has_any(self.ACTIVE_IMPORT_DEFAULTS["sku"]) and (
+                has_any(["Current price", "Start price", "Start Date", "Start date"]) or has_any(self.ACTIVE_IMPORT_DEFAULTS["listed_price"]) or has_any(self.ACTIVE_IMPORT_DEFAULTS["listed_date"])
+            )
+            is_orders = (
+                has_any(self.ORDERS_IMPORT_DEFAULTS["order_number"]) or has_any(["Sale Date", "Sold Date", "Paid on Date", "Paid On Date"]) or has_any(self.ORDERS_IMPORT_DEFAULTS["quantity"]) 
+            ) and has_any(self.ORDERS_IMPORT_DEFAULTS["title"]) and has_any(self.ORDERS_IMPORT_DEFAULTS["sold_price"]) 
+
+            if is_orders and not is_active:
+                report_type = "orders"
+            elif is_active and not is_orders:
                 report_type = "active_listings"
-            elif (
-                has_any(self.ORDERS_IMPORT_DEFAULTS["order_number"])
-                and has_any(self.ORDERS_IMPORT_DEFAULTS["title"])
-                and has_any(self.ORDERS_IMPORT_DEFAULTS["sold_price"])
-            ):
+            elif is_orders and is_active:
+                # Tie-breaker: prefer orders when both signatures appear (e.g. Orders report also contains Item number & Custom Label)
                 report_type = "orders"
             else:
                 warnings.append("Could not auto-detect report type")
