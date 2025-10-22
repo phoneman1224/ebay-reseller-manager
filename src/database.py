@@ -733,9 +733,10 @@ class Database:
         
         # Auto-detect report type by examining headers
         headers = list(rows[0].keys())
-        
+
         if report_type is None:
-            headers_lower = {h.lower() for h in headers}
+            # Filter out None/empty headers before calling .lower()
+            headers_lower = {h.lower() for h in headers if h}
 
             def has_any(options: List[str]) -> bool:
                 return any(opt.lower() in headers_lower for opt in options if opt)
