@@ -51,11 +51,9 @@ class ReportsTab(QWidget):
         # RIGHT
         custom_group = self._build_custom_export_group()
         log_group    = self._build_export_log_group()
-        draft_group  = self._build_ebay_drafts_group(compact=True)
 
         grid.addWidget(custom_group, 0, 1)
         grid.addWidget(log_group,    1, 1)
-        grid.addWidget(draft_group,  2, 1)
 
         layout.addLayout(grid)
         self.load_analytics()
@@ -169,36 +167,6 @@ class ReportsTab(QWidget):
         self.preview_box = QTextEdit(); self.preview_box.setReadOnly(True)
         self.preview_box.setFixedHeight(150)   # bigger so you can actually see rows
         f.addRow("Preview:", self.preview_box)
-
-        if compact:
-            g.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        return g
-
-    def _build_ebay_drafts_group(self, compact: bool=False) -> QGroupBox:
-        g = QGroupBox("eBay Draft Listings")
-        g.setStyleSheet("QGroupBox{font-size:13px;margin-top:6px;}QGroupBox::title{left:6px;padding:2px 4px;}")
-        f = QFormLayout(g); f.setContentsMargins(8,6,8,6); f.setVerticalSpacing(6); f.setHorizontalSpacing(8)
-
-        info = QLabel(
-            "Draft listing exports now live on the dedicated 📝 Draft Listings tab "
-            "so you can manage templates and lot listings in one place."
-        )
-        info.setWordWrap(True)
-        info.setStyleSheet("color:#555;")
-        f.addRow(info)
-
-        try:
-            default_cat = self.db.get_setting("default_category_id", "47140")
-        except Exception:
-            default_cat = "47140"
-        cat_hint = QLabel(f"Current default category ID: {default_cat}")
-        cat_hint.setStyleSheet("color:#777;")
-        f.addRow(cat_hint)
-
-        open_btn = QPushButton("Open Draft Listings Tab")
-        open_btn.setStyleSheet(self._btn_style())
-        open_btn.clicked.connect(self.open_draft_tab)
-        f.addRow(open_btn)
 
         if compact:
             g.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
@@ -352,35 +320,5 @@ class ReportsTab(QWidget):
 
     def edit_mapping(self):
         if not HAVE_MAPPING_DIALOG:
-            return QMessageBox.information(self, "Mapping Editor", "Mapping dialog isn’t installed in this build.")
+            return QMessageBox.information(self, "Mapping Editor", "Mapping dialog isn't installed in this build.")
         ImportMappingDialog(self.db, self).exec()
-
-    # eBay Drafts
-    def open_draft_tab(self):
-        """Switch to the dedicated Draft Listings tab."""
-        window = self.window()
-        try:
-            if hasattr(window, "tabs") and hasattr(window, "draft_listings_tab"):
-                target_index = window.tabs.indexOf(window.draft_listings_tab)
-                if target_index != -1:
-                    window.tabs.setCurrentIndex(target_index)
-                    # Ensure the draft tab refreshes its data so newly imported
-                    # inventory appears immediately.
-                    try:
-                        window.draft_listings_tab.load_inventory()
-                    except Exception:
-                        pass
-                else:
-                    QMessageBox.information(
-                        self,
-                        "Draft Listings",
-                        "Could not locate the Draft Listings tab on this window.",
-                    )
-            else:
-                QMessageBox.information(
-                    self,
-                    "Draft Listings",
-                    "Draft tab is not available in this build.",
-                )
-        except Exception as exc:
-            QMessageBox.critical(self, "Draft Listings", f"Unable to open Draft tab: {exc}")
