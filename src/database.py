@@ -287,9 +287,12 @@ class Database:
         if not candidates:
             return None
 
-        lower_key_map = {k.lower(): k for k in row.keys()}
+        # Filter out None/empty keys before calling .lower()
+        lower_key_map = {k.lower(): k for k in row.keys() if k}
 
         for column in candidates:
+            if not column:  # Skip None/empty candidates
+                continue
             lookup = column.lower()
             actual_key = column if column in row else lower_key_map.get(lookup)
             if not actual_key:
