@@ -60,7 +60,15 @@ class Database:
             db_path: Path to SQLite database file. Uses default path if not specified.
         """
         try:
-            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+            directory = os.path.dirname(db_path)
+            # ``:memory:`` (and similar URI forms) do not represent a real
+            # filesystem path.  ``os.makedirs`` also raises ``FileNotFoundError``
+            # when asked to create ``""`` which is what ``os.path.dirname``
+            # returns for paths in the current working directory.  Skip
+            # directory creation in those cases so callers can freely use
+            # in-memory databases or relative file paths.
+            if directory:
+                os.makedirs(directory, exist_ok=True)
             self.conn = sqlite3.connect(db_path)
             self.conn.row_factory = sqlite3.Row
             self.cursor = self.conn.cursor()
