@@ -7,6 +7,15 @@ import sqlite3
 import datetime
 from typing import Any, Dict, List, Optional
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Return True when the given environment variable is truthy."""
+
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 # Get absolute path for database relative to application directory
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DB_PATH = os.path.join(APP_DIR, "data", "reseller.db")
@@ -53,7 +62,7 @@ class Database:
         "order_number": ["Order Number", "Sales Record Number"],
     }
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH):
+    def __init__(self, db_path: str = DEFAULT_DB_PATH, *, feature_flags: Optional[Dict[str, bool]] = None):
         """Initialize database connection and create tables if needed.
         
         Args:
@@ -72,6 +81,14 @@ class Database:
             self.conn = sqlite3.connect(db_path)
             self.conn.row_factory = sqlite3.Row
             self.cursor = self.conn.cursor()
+            self.feature_flags: Dict[str, bool] = dict(feature_flags or {})
+            if "enable_min_inventory_orders" not in self.feature_flags:
+                self.feature_flags["enable_min_inventory_orders"] = _env_flag(
+                    "ENABLE_MIN_INVENTORY_ORDERS"
+                )
+            self.enable_min_inventory_orders = bool(
+                self.feature_flags.get("enable_min_inventory_orders", False)
+            )
             self.create_tables()
         except Exception as e:
             self.log_error("Database initialization failed", str(e))
@@ -129,6 +146,7 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT,
                 sku TEXT UNIQUE,
+                brand TEXT,
                 condition TEXT,
                 listed_price REAL,
                 listed_date TEXT,
@@ -224,6 +242,7 @@ class Database:
         )
 
         self._ensure_inventory_columns()
+        self._ensure_min_inventory_orders_schema()
         self.conn.commit()
 
     def _ensure_inventory_columns(self):
@@ -237,12 +256,26 @@ class Database:
             "item_number": "TEXT",
             "location": "TEXT",
             "notes": "TEXT",
+            "brand": "TEXT",
         }.items():
             if col not in cols:
                 try:
                     self.cursor.execute(f"ALTER TABLE inventory ADD COLUMN {col} {ddl}")
                 except Exception:
                     pass
+
+    def _ensure_min_inventory_orders_schema(self) -> None:
+        """Create additive tables for the minimum inventory/orders feature."""
+
+        try:
+            from migrations import min_inventory_orders
+        except ImportError:  # pragma: no cover - fallback for package usage
+            min_inventory_orders = None
+
+        if min_inventory_orders is None:
+            return
+
+        min_inventory_orders.run(self.cursor)
 
     # ---------------------------- helpers ----------------------------
     def _safe_int(self, v, default=1):
@@ -1009,6 +1042,519 @@ class Database:
         
         self.conn.commit()
         return stats
+
+    # ---------------------------- min inventory/orders helpers ----------------------------
+    def use_min_inventory_orders(self) -> bool:
+        """Return True when the modern inventory/orders flow is enabled."""
+
+        return bool(self.feature_flags.get("enable_min_inventory_orders", False))
+
+    def get_inventory_items_v2(self) -> List[Dict[str, Any]]:
+        """Return inventory rows from the new ``inventory_items`` table."""
+
+        self.cursor.execute(
+            "SELECT * FROM inventory_items ORDER BY LOWER(COALESCE(title, '')) ASC"
+        )
+        return self._rows_to_dicts(self.cursor.fetchall())
+
+    def get_inventory_item_v2(self, item_number: str) -> Optional[Dict[str, Any]]:
+        self.cursor.execute(
+            "SELECT * FROM inventory_items WHERE item_number=?",
+            (item_number,),
+        )
+        return self._row_to_dict(self.cursor.fetchone())
+
+    def list_inventory_categories(self) -> List[Dict[str, Optional[str]]]:
+        """Return distinct category name/number pairs for dropdowns."""
+
+        self.cursor.execute(
+            """
+            SELECT DISTINCT
+                NULLIF(TRIM(ebay_category1_name), '') AS name,
+                NULLIF(TRIM(ebay_category1_number), '') AS number
+            FROM inventory_items
+            WHERE
+                COALESCE(TRIM(ebay_category1_name), '') <> '' OR
+                COALESCE(TRIM(ebay_category1_number), '') <> ''
+            ORDER BY LOWER(COALESCE(ebay_category1_name, '')),
+                     LOWER(COALESCE(ebay_category1_number, ''))
+            """
+        )
+        rows = self.cursor.fetchall()
+        return [
+            {
+                "name": row["name"],
+                "number": row["number"],
+            }
+            for row in rows
+        ]
+
+    def get_sales_orders_v2(self) -> List[Dict[str, Any]]:
+        self.cursor.execute(
+            "SELECT * FROM sales_orders ORDER BY ordered_at DESC, order_number DESC"
+        )
+        return self._rows_to_dicts(self.cursor.fetchall())
+
+    def get_sales_order_v2(self, order_number: str) -> Optional[Dict[str, Any]]:
+        self.cursor.execute(
+            "SELECT * FROM sales_orders WHERE order_number=?",
+            (order_number,),
+        )
+        return self._row_to_dict(self.cursor.fetchone())
+
+    def get_sales_order_items_v2(
+        self, order_number: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        if order_number:
+            self.cursor.execute(
+                "SELECT * FROM sales_order_items WHERE order_number=? ORDER BY id ASC",
+                (order_number,),
+            )
+        else:
+            self.cursor.execute("SELECT * FROM sales_order_items ORDER BY id ASC")
+        return self._rows_to_dicts(self.cursor.fetchall())
+
+    def get_sales_order_item_v2(self, order_item_id: int) -> Optional[Dict[str, Any]]:
+        self.cursor.execute(
+            "SELECT * FROM sales_order_items WHERE id=?",
+            (order_item_id,),
+        )
+        return self._row_to_dict(self.cursor.fetchone())
+
+    def get_shipments_for_order(self, order_number: str) -> List[Dict[str, Any]]:
+        self.cursor.execute(
+            "SELECT * FROM shipments WHERE order_number=? ORDER BY shipped_on_date",
+            (order_number,),
+        )
+        return self._rows_to_dicts(self.cursor.fetchall())
+
+    def _append_edit_log(
+        self,
+        entity_type: str,
+        entity_pk: Any,
+        field: str,
+        old_value: Optional[Any],
+        new_value: Optional[Any],
+        edited_by: Optional[str],
+    ) -> None:
+        self.cursor.execute(
+            """
+            INSERT INTO edit_log (entity_type, entity_pk, field, old_value, new_value, edited_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entity_type,
+                str(entity_pk),
+                field,
+                None if old_value is None else str(old_value),
+                None if new_value is None else str(new_value),
+                edited_by,
+            ),
+        )
+
+    def update_inventory_item_user_fields(
+        self,
+        item_number: str,
+        updates: Dict[str, Optional[str]],
+        *,
+        edited_by: Optional[str] = None,
+    ) -> bool:
+        """Persist user-editable inventory fields and log the change."""
+
+        allowed = {"custom_sku", "ebay_category1_name", "ebay_category1_number"}
+        if not updates:
+            return False
+
+        current = self.get_inventory_item_v2(item_number)
+        if not current:
+            return False
+
+        pending: Dict[str, Optional[str]] = {}
+        changes: List[tuple] = []
+        for field, value in updates.items():
+            if field not in allowed:
+                continue
+            new_value = value.strip() if isinstance(value, str) else value
+            if isinstance(new_value, str) and new_value == "":
+                new_value = None
+            old_value = current.get(field)
+            if isinstance(old_value, str) and old_value == "":
+                old_value = None
+            if old_value == new_value:
+                continue
+            pending[field] = new_value
+            changes.append((field, old_value, new_value))
+
+        if not pending:
+            return False
+
+        set_clause = ", ".join(f"{field}=?" for field in pending)
+        params = list(pending.values()) + [item_number]
+        self.cursor.execute(
+            f"UPDATE inventory_items SET {set_clause} WHERE item_number=?",
+            params,
+        )
+
+        for field, old_value, new_value in changes:
+            self._append_edit_log(
+                "inventory_item",
+                item_number,
+                field,
+                old_value,
+                new_value,
+                edited_by,
+            )
+
+        self.conn.commit()
+        return True
+
+    def update_sales_order_item_user_fields(
+        self,
+        order_item_id: int,
+        updates: Dict[str, Optional[str]],
+        *,
+        edited_by: Optional[str] = None,
+    ) -> bool:
+        """Persist user-editable order item fields and log the change."""
+
+        if not updates:
+            return False
+
+        current = self.get_sales_order_item_v2(order_item_id)
+        if not current:
+            return False
+
+        pending: Dict[str, Optional[str]] = {}
+        changes: List[tuple] = []
+        for field in ("custom_sku",):
+            if field not in updates:
+                continue
+            value = updates[field]
+            new_value = value.strip() if isinstance(value, str) else value
+            if isinstance(new_value, str) and new_value == "":
+                new_value = None
+            old_value = current.get(field)
+            if isinstance(old_value, str) and old_value == "":
+                old_value = None
+            if old_value == new_value:
+                continue
+            pending[field] = new_value
+            changes.append((field, old_value, new_value))
+
+        if not pending:
+            return False
+
+        set_clause = ", ".join(f"{field}=?" for field in pending)
+        params = list(pending.values()) + [order_item_id]
+        self.cursor.execute(
+            f"UPDATE sales_order_items SET {set_clause} WHERE id=?",
+            params,
+        )
+
+        for field, old_value, new_value in changes:
+            self._append_edit_log(
+                "sales_order_item",
+                order_item_id,
+                field,
+                old_value,
+                new_value,
+                edited_by,
+            )
+
+        self.conn.commit()
+        return True
+
+    def upsert_inventory_item_from_feed(
+        self,
+        record: Dict[str, Any],
+        *,
+        timestamp: Optional[str] = None,
+    ) -> bool:
+        """Insert or update an inventory item from the active listings feed."""
+
+        item_number = record.get("item_number")
+        if not item_number:
+            raise ValueError("item_number is required")
+
+        timestamp = timestamp or datetime.datetime.utcnow().isoformat()
+        existing = self.get_inventory_item_v2(item_number)
+
+        def _normalize(field: str) -> Optional[Any]:
+            value = record.get(field)
+            if isinstance(value, str):
+                value = value.strip()
+                if value == "":
+                    value = None
+            return value
+
+        payload = {
+            "item_number": item_number,
+            "title": record.get("title"),
+            "custom_sku": _normalize("custom_sku"),
+            "current_price": record.get("current_price"),
+            "available_quantity": record.get("available_quantity"),
+            "ebay_category1_name": _normalize("ebay_category1_name"),
+            "ebay_category1_number": _normalize("ebay_category1_number"),
+            "condition": _normalize("condition"),
+            "listing_site": _normalize("listing_site"),
+            "start_date": _normalize("start_date"),
+            "end_date": _normalize("end_date"),
+            "status": record.get("status", "active"),
+            "last_sync_at": timestamp,
+        }
+
+        if existing:
+            for field in ("custom_sku", "ebay_category1_name", "ebay_category1_number"):
+                current_value = existing.get(field)
+                if isinstance(current_value, str) and current_value.strip() == "":
+                    current_value = None
+                if current_value not in (None, ""):
+                    payload[field] = current_value
+            self.cursor.execute(
+                """
+                UPDATE inventory_items
+                SET
+                    title=:title,
+                    current_price=:current_price,
+                    available_quantity=:available_quantity,
+                    ebay_category1_name=:ebay_category1_name,
+                    ebay_category1_number=:ebay_category1_number,
+                    condition=:condition,
+                    listing_site=:listing_site,
+                    start_date=:start_date,
+                    end_date=:end_date,
+                    status='active',
+                    last_sync_at=:last_sync_at,
+                    custom_sku=:custom_sku
+                WHERE item_number=:item_number
+                """,
+                payload,
+            )
+            return False
+
+        self.cursor.execute(
+            """
+            INSERT INTO inventory_items (
+                item_number,
+                title,
+                custom_sku,
+                current_price,
+                available_quantity,
+                ebay_category1_name,
+                ebay_category1_number,
+                condition,
+                listing_site,
+                start_date,
+                end_date,
+                status,
+                last_sync_at
+            ) VALUES (
+                :item_number,
+                :title,
+                :custom_sku,
+                :current_price,
+                :available_quantity,
+                :ebay_category1_name,
+                :ebay_category1_number,
+                :condition,
+                :listing_site,
+                :start_date,
+                :end_date,
+                :status,
+                :last_sync_at
+            )
+            """,
+            payload,
+        )
+        return True
+
+    def upsert_sales_order_from_feed(self, record: Dict[str, Any]) -> bool:
+        """Insert or update a sales order from the completed-orders feed."""
+
+        order_number = record.get("order_number")
+        if not order_number:
+            raise ValueError("order_number is required")
+
+        existing = self.get_sales_order_v2(order_number)
+        self.cursor.execute(
+            """
+            INSERT INTO sales_orders (
+                order_number,
+                sales_record_number,
+                buyer_username,
+                buyer_name,
+                buyer_email,
+                ship_to_name,
+                ship_to_phone,
+                ship_to_address_1,
+                ship_to_address_2,
+                ship_to_city,
+                ship_to_state,
+                ship_to_zip,
+                ship_to_country,
+                order_total,
+                ordered_at,
+                paid_at,
+                shipped_on_date,
+                status,
+                meta_json
+            ) VALUES (
+                :order_number,
+                :sales_record_number,
+                :buyer_username,
+                :buyer_name,
+                :buyer_email,
+                :ship_to_name,
+                :ship_to_phone,
+                :ship_to_address_1,
+                :ship_to_address_2,
+                :ship_to_city,
+                :ship_to_state,
+                :ship_to_zip,
+                :ship_to_country,
+                :order_total,
+                :ordered_at,
+                :paid_at,
+                :shipped_on_date,
+                :status,
+                :meta_json
+            )
+            ON CONFLICT(order_number) DO UPDATE SET
+                sales_record_number=excluded.sales_record_number,
+                buyer_username=excluded.buyer_username,
+                buyer_name=excluded.buyer_name,
+                buyer_email=excluded.buyer_email,
+                ship_to_name=excluded.ship_to_name,
+                ship_to_phone=excluded.ship_to_phone,
+                ship_to_address_1=excluded.ship_to_address_1,
+                ship_to_address_2=excluded.ship_to_address_2,
+                ship_to_city=excluded.ship_to_city,
+                ship_to_state=excluded.ship_to_state,
+                ship_to_zip=excluded.ship_to_zip,
+                ship_to_country=excluded.ship_to_country,
+                order_total=excluded.order_total,
+                ordered_at=excluded.ordered_at,
+                paid_at=excluded.paid_at,
+                shipped_on_date=excluded.shipped_on_date,
+                status=excluded.status,
+                meta_json=excluded.meta_json
+            """,
+            record,
+        )
+        return existing is None
+
+    def upsert_sales_order_item_from_feed(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        """Insert/update a sales order item while preserving user fields."""
+
+        order_number = record.get("order_number")
+        if not order_number:
+            raise ValueError("order_number is required")
+
+        transaction_id = record.get("transaction_id")
+        lookup_params = (order_number, transaction_id, transaction_id)
+        self.cursor.execute(
+            """
+            SELECT id, custom_sku FROM sales_order_items
+            WHERE order_number=?
+              AND ((transaction_id IS NULL AND ? IS NULL) OR transaction_id=?)
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            lookup_params,
+        )
+        existing = self.cursor.fetchone()
+
+        payload = dict(record)
+        if existing and existing["custom_sku"] not in (None, ""):
+            payload["custom_sku"] = existing["custom_sku"]
+
+        if existing:
+            payload["id"] = existing["id"]
+            self.cursor.execute(
+                """
+                UPDATE sales_order_items
+                SET
+                    item_number=:item_number,
+                    item_title_snapshot=:item_title_snapshot,
+                    custom_sku=:custom_sku,
+                    quantity=:quantity,
+                    unit_price=:unit_price,
+                    tax_amount=:tax_amount,
+                    shipping_amount=:shipping_amount,
+                    discount_amount=:discount_amount
+                WHERE id=:id
+                """,
+                payload,
+            )
+            return {"id": existing["id"], "inserted": False}
+
+        self.cursor.execute(
+            """
+            INSERT INTO sales_order_items (
+                order_number,
+                transaction_id,
+                item_number,
+                item_title_snapshot,
+                custom_sku,
+                quantity,
+                unit_price,
+                tax_amount,
+                shipping_amount,
+                discount_amount
+            ) VALUES (
+                :order_number,
+                :transaction_id,
+                :item_number,
+                :item_title_snapshot,
+                :custom_sku,
+                :quantity,
+                :unit_price,
+                :tax_amount,
+                :shipping_amount,
+                :discount_amount
+            )
+            """,
+            payload,
+        )
+        return {"id": self.cursor.lastrowid, "inserted": True}
+
+    def upsert_shipment_from_feed(self, record: Dict[str, Any]) -> Optional[bool]:
+        """Insert or update a shipment. Returns True if inserted, False if updated."""
+
+        tracking_number = record.get("tracking_number")
+        if not tracking_number:
+            return None
+
+        self.cursor.execute(
+            "SELECT id FROM shipments WHERE tracking_number=?",
+            (tracking_number,),
+        )
+        existing = self.cursor.fetchone()
+
+        self.cursor.execute(
+            """
+            INSERT INTO shipments (
+                order_number,
+                shipping_service,
+                tracking_number,
+                label_cost,
+                shipped_on_date
+            ) VALUES (
+                :order_number,
+                :shipping_service,
+                :tracking_number,
+                :label_cost,
+                :shipped_on_date
+            )
+            ON CONFLICT(tracking_number) DO UPDATE SET
+                order_number=excluded.order_number,
+                shipping_service=excluded.shipping_service,
+                label_cost=excluded.label_cost,
+                shipped_on_date=excluded.shipped_on_date
+            """,
+            record,
+        )
+        return existing is None
 
     # ---------------------------- housekeeping ----------------------------
     def log_error(self, context: str, message: str):
