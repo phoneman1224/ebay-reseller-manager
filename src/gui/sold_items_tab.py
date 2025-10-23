@@ -10,7 +10,7 @@ from PyQt6.QtGui import QFont, QColor
 from datetime import datetime
 
 
-from .value_helpers import resolve_cost
+from .value_helpers import resolve_cost, format_currency
 
 
 class SoldItemsTab(QWidget):
@@ -140,7 +140,7 @@ class SoldItemsTab(QWidget):
                     
                     # Purchase Cost
                     cost = resolve_cost(item)
-                    self.sold_table.setItem(row, 2, QTableWidgetItem(f"${cost:.2f}"))
+                    self.sold_table.setItem(row, 2, QTableWidgetItem(format_currency(cost)))
                     
                     # Sold Price
                     try:
@@ -161,7 +161,8 @@ class SoldItemsTab(QWidget):
                     self.sold_table.setItem(row, 5, QTableWidgetItem(f"${fees:.2f}"))
                     
                     # Net Profit
-                    profit = sold_price - cost - fees
+                    cost_for_calc = cost if cost is not None else 0.0
+                    profit = sold_price - cost_for_calc - fees
                     profit_item = QTableWidgetItem(f"${profit:.2f}")
                     
                     # Color code profit
@@ -174,8 +175,8 @@ class SoldItemsTab(QWidget):
                     self.sold_table.setItem(row, 6, profit_item)
                     
                     # Margin %
-                    if cost > 0:
-                        margin = (profit / cost) * 100
+                    if cost_for_calc > 0:
+                        margin = (profit / cost_for_calc) * 100
                         margin_item = QTableWidgetItem(f"{margin:.1f}%")
                         
                         # Color code margin
@@ -221,7 +222,7 @@ class SoldItemsTab(QWidget):
                     
                     # Update totals
                     total_revenue += sold_price
-                    total_cost += cost
+                    total_cost += cost_for_calc
                     total_fees += fees
                     total_profit += profit
                 
