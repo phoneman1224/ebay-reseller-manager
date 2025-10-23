@@ -146,6 +146,7 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT,
                 sku TEXT UNIQUE,
+                brand TEXT,
                 condition TEXT,
                 listed_price REAL,
                 listed_date TEXT,
@@ -255,6 +256,7 @@ class Database:
             "item_number": "TEXT",
             "location": "TEXT",
             "notes": "TEXT",
+            "brand": "TEXT",
         }.items():
             if col not in cols:
                 try:
