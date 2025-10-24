@@ -196,7 +196,16 @@ class PricingTab(QWidget):
             self.profit_input.setSuffix("%")
             self.profit_input.setValue(30.00)
         self.calculate_prices()
-    
+
+    def _get_fee_setting(self, key, default):
+        value = self.db.get_setting(key)
+        if value in (None, ""):
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     def calculate_shipping_cost(self, weight, length, width, height):
         """
         Estimate shipping cost using simplified USPS rates
@@ -224,13 +233,15 @@ class PricingTab(QWidget):
     
     def calculate_ebay_fee(self, price):
         """Calculate eBay final value fee"""
-        # Standard rate is 12.9% + $0.30
-        return (price * 0.129) + 0.30
-    
+        percent = self._get_fee_setting('ebay_fee_percent', 0.129)
+        fixed = self._get_fee_setting('ebay_fee_fixed', 0.30)
+        return (price * percent) + fixed
+
     def calculate_payment_fee(self, price):
         """Calculate payment processing fee"""
-        # Standard rate is 2.9% + $0.30
-        return (price * 0.029) + 0.30
+        percent = self._get_fee_setting('payment_fee_percent', 0.029)
+        fixed = self._get_fee_setting('payment_fee_fixed', 0.30)
+        return (price * percent) + fixed
     
     def calculate_prices(self):
         """Calculate and display pricing options"""
@@ -252,29 +263,39 @@ class PricingTab(QWidget):
         width = self.width_input.value()
         height = self.height_input.value()
         shipping_cost = self.calculate_shipping_cost(weight, length, width, height)
-        
+
+        ebay_percent = self._get_fee_setting('ebay_fee_percent', 0.129)
+        ebay_fixed = self._get_fee_setting('ebay_fee_fixed', 0.30)
+        payment_percent = self._get_fee_setting('payment_fee_percent', 0.029)
+        payment_fixed = self._get_fee_setting('payment_fee_fixed', 0.30)
+
+        combined_percent = 1 - (ebay_percent + payment_percent)
+        combined_fixed = ebay_fixed + payment_fixed
+
+        if combined_percent <= 0:
+            self.results_display.setText(
+                "Fee settings result in a combined percentage of 100% or more. "
+                "Please adjust the fee rates in Settings."
+            )
+            self.recommendation_label.setText("")
+            return
+
         # Calculate Option A: Free Shipping (rolled into price)
-        # We need to solve for price where: price - shipping - ebay_fee - payment_fee - cost = target_profit
-        # ebay_fee = price * 0.129 + 0.30
-        # payment_fee = price * 0.029 + 0.30
-        # So: price - shipping - (price * 0.129 + 0.30) - (price * 0.029 + 0.30) - cost = target_profit
-        # price * (1 - 0.129 - 0.029) - shipping - 0.60 - cost = target_profit
-        # price * 0.842 = target_profit + cost + shipping + 0.60
-        
-        price_a = (target_profit + cost + shipping_cost + 0.60) / 0.842
+        # price - shipping - ebay_fee - payment_fee - cost = target_profit
+        # => price * (1 - ebay_percent - payment_percent) = target_profit + cost + shipping + combined_fixed
+        price_a = (target_profit + cost + shipping_cost + combined_fixed) / combined_percent
         price_a = math.ceil(price_a * 100) / 100  # Round up to nearest cent
-        
+
         ebay_fee_a = self.calculate_ebay_fee(price_a)
         payment_fee_a = self.calculate_payment_fee(price_a)
         net_profit_a = price_a - shipping_cost - ebay_fee_a - payment_fee_a - cost
-        
+
         # Calculate Option B: Calculated Shipping (buyer pays)
         # Here: price - ebay_fee - payment_fee - cost = target_profit
-        # price * (1 - 0.129 - 0.029) - 0.60 - cost = target_profit
-        
-        price_b = (target_profit + cost + 0.60) / 0.842
+        # => price * (1 - ebay_percent - payment_percent) = target_profit + cost + combined_fixed
+        price_b = (target_profit + cost + combined_fixed) / combined_percent
         price_b = math.ceil(price_b * 100) / 100
-        
+
         ebay_fee_b = self.calculate_ebay_fee(price_b)
         payment_fee_b = self.calculate_payment_fee(price_b)
         net_profit_b = price_b - ebay_fee_b - payment_fee_b - cost
@@ -293,8 +314,8 @@ class PricingTab(QWidget):
         <table style="width: 100%;">
         <tr><td><b>List Price:</b></td><td style="text-align: right; font-size: 20px; color: #1976D2;"><b>${price_a:.2f}</b></td></tr>
         <tr><td>Shipping (absorbed):</td><td style="text-align: right;">-${shipping_cost:.2f}</td></tr>
-        <tr><td>eBay Fee (12.9%):</td><td style="text-align: right;">-${ebay_fee_a:.2f}</td></tr>
-        <tr><td>Payment Fee:</td><td style="text-align: right;">-${payment_fee_a:.2f}</td></tr>
+        <tr><td>eBay Fee ({ebay_percent*100:.2f}% + ${ebay_fixed:.2f}):</td><td style="text-align: right;">-${ebay_fee_a:.2f}</td></tr>
+        <tr><td>Payment Fee ({payment_percent*100:.2f}% + ${payment_fixed:.2f}):</td><td style="text-align: right;">-${payment_fee_a:.2f}</td></tr>
         <tr><td>Your Cost:</td><td style="text-align: right;">-${cost:.2f}</td></tr>
         <tr style="border-top: 2px solid #1976D2;"><td><b>Net Profit:</b></td><td style="text-align: right; color: green; font-size: 18px;"><b>${net_profit_a:.2f}</b></td></tr>
         </table>
@@ -309,8 +330,8 @@ class PricingTab(QWidget):
         <table style="width: 100%;">
         <tr><td><b>List Price:</b></td><td style="text-align: right; font-size: 20px; color: #F57C00;"><b>${price_b:.2f}</b></td></tr>
         <tr><td>Buyer Pays Shipping:</td><td style="text-align: right;">+${shipping_cost:.2f}</td></tr>
-        <tr><td>eBay Fee (12.9%):</td><td style="text-align: right;">-${ebay_fee_b:.2f}</td></tr>
-        <tr><td>Payment Fee:</td><td style="text-align: right;">-${payment_fee_b:.2f}</td></tr>
+        <tr><td>eBay Fee ({ebay_percent*100:.2f}% + ${ebay_fixed:.2f}):</td><td style="text-align: right;">-${ebay_fee_b:.2f}</td></tr>
+        <tr><td>Payment Fee ({payment_percent*100:.2f}% + ${payment_fixed:.2f}):</td><td style="text-align: right;">-${payment_fee_b:.2f}</td></tr>
         <tr><td>Your Cost:</td><td style="text-align: right;">-${cost:.2f}</td></tr>
         <tr style="border-top: 2px solid #F57C00;"><td><b>Net Profit:</b></td><td style="text-align: right; color: green; font-size: 18px;"><b>${net_profit_b:.2f}</b></td></tr>
         </table>

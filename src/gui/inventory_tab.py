@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QDateEdit, QDoubleSpinBox, QMessageBox, QHeaderView)
 from PyQt6.QtCore import Qt, QDate
 from datetime import datetime
+from typing import Dict, Optional
 
 
 from .value_helpers import resolve_cost, format_currency
@@ -16,6 +17,8 @@ class InventoryTab(QWidget):
     def __init__(self, db):
         super().__init__()
         self.db = db
+        self.category_entries = []
+        self.default_category_id = None
         self.init_ui()
         self.refresh_data()
     
@@ -110,10 +113,78 @@ class InventoryTab(QWidget):
         button_layout.addWidget(delete_btn)
         
         layout.addLayout(button_layout)
-    
+
+    def _load_category_settings(self):
+        """Load configured eBay categories from settings."""
+
+        try:
+            settings = self.db.get_import_settings()
+        except Exception:
+            settings = {}
+
+        categories = settings.get("ebay_categories")
+        if isinstance(categories, list):
+            self.category_entries = categories
+        else:
+            self.category_entries = []
+
+        default = settings.get("default_category_id")
+        if isinstance(default, str):
+            default = default.strip()
+        if not default:
+            stored_default = self.db.get_setting("default_category_id")
+            if stored_default not in (None, ""):
+                default = str(stored_default).strip()
+
+        self.default_category_id = default or None
+
+    def _category_lookup(self) -> Dict[str, str]:
+        """Return a mapping of category numbers to display names."""
+
+        lookup = {}
+        for entry in self.category_entries:
+            if not isinstance(entry, dict):
+                continue
+            number = entry.get("number")
+            name = entry.get("name")
+            number_text = str(number).strip() if number not in (None, "") else ""
+            name_text = str(name).strip() if name not in (None, "") else ""
+            if number_text:
+                lookup[number_text] = name_text
+        return lookup
+
+    def _format_category_display(self, item: dict, lookup: Dict[str, str]) -> str:
+        """Produce a friendly category label for the inventory table."""
+
+        raw_id = item.get('category_id')
+        category_id = str(raw_id).strip() if raw_id not in (None, "") else ""
+        raw_name = item.get('category')
+        category_name = str(raw_name).strip() if raw_name not in (None, "") else ""
+
+        mapped_name = lookup.get(category_id, "")
+
+        if category_name and category_id:
+            if category_name == category_id:
+                return category_id
+            return f"{category_name} ({category_id})"
+
+        if mapped_name and category_id:
+            return f"{mapped_name} ({category_id})" if mapped_name != category_id else mapped_name
+
+        if category_name:
+            return category_name
+
+        if category_id:
+            return category_id
+
+        return ""
+
     def refresh_data(self):
         """Refresh the inventory table"""
         try:
+            self._load_category_settings()
+            category_lookup = self._category_lookup()
+
             # Get filter status
             filter_text = self.filter_combo.currentText()
             if filter_text == "All Items":
@@ -132,10 +203,11 @@ class InventoryTab(QWidget):
                 try:
                     # Convert sqlite3.Row to dict for easier access
                     item_dict = dict(item) if not isinstance(item, dict) else item
-                    
+
                     self.table.setItem(row, 0, QTableWidgetItem(str(item_dict['id'])))
                     self.table.setItem(row, 1, QTableWidgetItem(item_dict.get('title') or ''))
-                    self.table.setItem(row, 2, QTableWidgetItem(item_dict.get('category') or ''))
+                    category_label = self._format_category_display(item_dict, category_lookup)
+                    self.table.setItem(row, 2, QTableWidgetItem(category_label))
                     self.table.setItem(row, 3, QTableWidgetItem(item_dict.get('sku') or ''))
                     
                     brand_model = f"{item_dict.get('brand') or ''} {item_dict.get('model') or ''}".strip()
@@ -551,16 +623,98 @@ class AddEditItemDialog(QDialog):
         super().__init__(parent)
         self.db = db
         self.item_id = item_id
+        self.category_entries = []
+        self.default_category_id = None
+        self._load_category_settings()
         self.init_ui()
-        
+
         if item_id:
             self.load_item_data()
-    
+
+    def _load_category_settings(self):
+        """Load reusable category options from settings."""
+
+        try:
+            settings = self.db.get_import_settings()
+        except Exception:
+            settings = {}
+
+        categories = settings.get("ebay_categories")
+        if isinstance(categories, list):
+            self.category_entries = categories
+        else:
+            self.category_entries = []
+
+        default = settings.get("default_category_id")
+        if isinstance(default, str):
+            default = default.strip()
+        if not default:
+            stored = self.db.get_setting("default_category_id")
+            if stored not in (None, ""):
+                default = str(stored).strip()
+
+        self.default_category_id = default or None
+
+    def _populate_category_combo(self, selected: str = None) -> None:
+        if not hasattr(self, "category_combo"):
+            return
+
+        selected_value = (selected or "").strip()
+
+        options = []
+        seen = set()
+        for entry in self.category_entries:
+            name = (entry.get("name") or "").strip()
+            number = (entry.get("number") or "").strip()
+            if not name and not number:
+                continue
+            value = number or name
+            if value in seen:
+                continue
+            seen.add(value)
+            label = f"{name} ({number})" if name and number else name or number
+            options.append((label, value))
+
+        self.category_combo.blockSignals(True)
+        self.category_combo.clear()
+        self.category_combo.addItem("Select category", "")
+        for label, value in options:
+            self.category_combo.addItem(label, value)
+
+        if selected_value:
+            if selected_value not in seen:
+                self.category_combo.addItem(selected_value, selected_value)
+            index = self.category_combo.findData(selected_value)
+            if index < 0:
+                index = self.category_combo.findText(selected_value)
+            if index >= 0:
+                self.category_combo.setCurrentIndex(index)
+            else:
+                self.category_combo.setEditText(selected_value)
+        else:
+            self.category_combo.setCurrentIndex(0)
+            self.category_combo.setEditText("")
+
+        self.category_combo.blockSignals(False)
+
+    def _resolve_category_value(self) -> Optional[str]:
+        if not hasattr(self, "category_combo"):
+            return None
+
+        data = self.category_combo.currentData()
+        if isinstance(data, str):
+            data = data.strip()
+        if not data:
+            data = self.category_combo.currentText()
+            if isinstance(data, str):
+                data = data.strip()
+        return data or None
+
     def init_ui(self):
         """Initialize the dialog UI"""
         self.setWindowTitle("Add Inventory Item" if not self.item_id else "Edit Inventory Item")
         self.setMinimumWidth(500)
-        
+
         layout = QFormLayout(self)
         
         # Form fields
@@ -570,10 +724,17 @@ class AddEditItemDialog(QDialog):
         
         self.brand_input = QLineEdit()
         layout.addRow("Brand:", self.brand_input)
-        
+
         self.model_input = QLineEdit()
         layout.addRow("Model:", self.model_input)
-        
+
+        self.category_combo = QComboBox()
+        self.category_combo.setEditable(True)
+        self.category_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.category_combo.lineEdit().setPlaceholderText("Select or type category")
+        self._populate_category_combo(self.default_category_id)
+        layout.addRow("eBay Category:", self.category_combo)
+
         self.upc_input = QLineEdit()
         layout.addRow("UPC/ISBN:", self.upc_input)
         
@@ -648,12 +809,19 @@ class AddEditItemDialog(QDialog):
     
     def load_item_data(self):
         """Load existing item data into form"""
+        self._load_category_settings()
         item = self.db.get_inventory_item(self.item_id)
         if not item:
             return
 
         if not isinstance(item, dict):
             item = dict(item)
+
+        category_value = item.get('category_id') or item.get('category')
+        if category_value:
+            self._populate_category_combo(str(category_value).strip())
+        else:
+            self._populate_category_combo(self.default_category_id)
 
         self.title_input.setText(item.get('title') or '')
         self.brand_input.setText(item.get('brand') or '')
@@ -701,10 +869,13 @@ class AddEditItemDialog(QDialog):
                 return
             
             # Prepare data
+            category_value = self._resolve_category_value()
+
             item_data = {
                 'title': self.title_input.text().strip(),
                 'brand': self.brand_input.text().strip() or None,
                 'model': self.model_input.text().strip() or None,
+                'category_id': category_value,
                 'upc_isbn': self.upc_input.text().strip() or None,
                 'condition': self.condition_combo.currentText(),
                 'purchase_cost': self.cost_input.value(),
