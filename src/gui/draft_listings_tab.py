@@ -54,8 +54,11 @@ class DraftListingsTab(QWidget):
         
         self.category_input = QLineEdit()
         self.category_input.setPlaceholderText("47140 (Clothing, Shoes & Accessories)")
-        default_cat = self.db.get_setting("default_category_id", "47140")
-        self.category_input.setText(str(default_cat))
+        try:
+            _, default_cat = self.db.get_configured_categories()
+        except Exception:
+            default_cat = None
+        self.category_input.setText(str(default_cat or "47140"))
         settings_layout.addRow("Default Category ID:", self.category_input)
         
         save_cat_btn = QPushButton("💾 Save as Default")

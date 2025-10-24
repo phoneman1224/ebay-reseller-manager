@@ -203,6 +203,41 @@ class TestDatabase(unittest.TestCase):
             if os.path.exists(path):
                 os.unlink(path)
 
+    def test_get_configured_categories_sanitizes_values(self):
+        """Configured categories should be trimmed and ignore empty entries."""
+
+        settings = {
+            'ebay_categories': [
+                {'name': 'Shoes', 'number': ' 12345 '},
+                {'name': '  Electronics  ', 'number': ''},
+                {'name': '', 'number': ' 99887 '},
+                {'name': None, 'number': None},
+            ],
+            'default_category_id': ' 47140 ',
+        }
+
+        self.db.update_import_settings(settings)
+
+        categories, default_id = self.db.get_configured_categories()
+        self.assertEqual(default_id, '47140')
+        self.assertEqual(
+            categories,
+            [
+                {'name': 'Shoes', 'number': '12345'},
+                {'name': 'Electronics', 'number': None},
+                {'name': None, 'number': '99887'},
+            ],
+        )
+
+    def test_get_configured_categories_falls_back_to_stored_default(self):
+        """Stored scalar defaults should be returned when JSON lacks one."""
+
+        self.db.set_setting('default_category_id', '55555')
+
+        categories, default_id = self.db.get_configured_categories()
+        self.assertEqual(categories, [])
+        self.assertEqual(default_id, '55555')
+
     def test_normalize_orders_respects_mapping(self):
         """Custom order mappings should drive CSV normalisation."""
         fd, path = tempfile.mkstemp(suffix='.csv')
