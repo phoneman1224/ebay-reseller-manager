@@ -5,7 +5,7 @@ import csv
 import json
 import sqlite3
 import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -184,6 +184,15 @@ class Database:
             """
         )
 
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS import_mappings (
+                report_type TEXT PRIMARY KEY,
+                mapping_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+
         self._ensure_inventory_columns()
         self._ensure_min_inventory_orders_schema()
         self.conn.commit()
@@ -285,6 +294,294 @@ class Database:
             if value not in (None, ""):
                 return value
         return None
+
+    def _read_csv_rows(self, filepath: str) -> tuple[List[str], List[Dict[str, Any]]]:
+        with open(filepath, "r", encoding="utf-8-sig", newline="") as handle:
+            filtered = (line for line in handle if line.strip())
+            reader = csv.DictReader(filtered)
+            headers = list(reader.fieldnames or [])
+            rows = [row for row in reader]
+        return headers, rows
+
+    def _detect_report_type(self, headers: Iterable[str]) -> str:
+        columns = {str(header).strip().lower() for header in headers if header}
+        if {"order number", "sold for"}.issubset(columns) or {
+            "order number",
+            "order total",
+        }.issubset(columns):
+            return "orders"
+        return "active_listings"
+
+    def _normalize_active_listing(
+        self, row: Dict[str, Any], mapping: Optional[Dict[str, str]]
+    ) -> Dict[str, Any]:
+        title = self._resolve_mapped_value(row, mapping, "title", ["Title"])
+        if not title:
+            raise ValueError("Missing title column in active listings row")
+
+        sku = self._resolve_mapped_value(
+            row,
+            mapping,
+            "sku",
+            ["Custom label (SKU)", "Custom Label", "SKU"],
+        )
+        listed_price_raw = self._resolve_mapped_value(
+            row,
+            mapping,
+            "listed_price",
+            ["Current price", "Start price", "Price"],
+        )
+        quantity_raw = self._resolve_mapped_value(
+            row,
+            mapping,
+            "quantity",
+            ["Available quantity", "Quantity"],
+        )
+        listed_date_raw = self._resolve_mapped_value(
+            row,
+            mapping,
+            "listed_date",
+            ["Start date", "Start Date"],
+        )
+        item_number = self._resolve_mapped_value(
+            row,
+            mapping,
+            "item_number",
+            ["Item Number", "Item number"],
+        )
+        category = self._resolve_mapped_value(
+            row,
+            mapping,
+            "category_id",
+            ["eBay category 1 number", "Category ID"],
+        )
+
+        data: Dict[str, Any] = {
+            "title": title.strip(),
+            "sku": sku.strip() if isinstance(sku, str) and sku.strip() else None,
+            "listed_price": self._parse_float(listed_price_raw),
+            "listed_date": self._parse_date_iso(listed_date_raw),
+            "quantity": self._safe_int(quantity_raw, default=1),
+            "item_number": item_number.strip()
+            if isinstance(item_number, str) and item_number.strip()
+            else None,
+            "category_id": category.strip()
+            if isinstance(category, str) and category.strip()
+            else None,
+            "status": "Listed",
+        }
+        return data
+
+    def _normalize_order(
+        self, row: Dict[str, Any], mapping: Optional[Dict[str, str]]
+    ) -> Dict[str, Any]:
+        order_number = self._resolve_mapped_value(
+            row,
+            mapping,
+            "order_number",
+            ["Order Number"],
+        )
+        if not order_number:
+            raise ValueError("Missing order number in orders row")
+
+        title = self._resolve_mapped_value(
+            row,
+            mapping,
+            "title",
+            ["Item Title", "Title"],
+        )
+        sku = self._resolve_mapped_value(
+            row,
+            mapping,
+            "sku",
+            ["Custom Label", "Custom label (SKU)", "SKU"],
+        )
+        sold_price_raw = self._resolve_mapped_value(
+            row,
+            mapping,
+            "sold_price",
+            ["Sold For", "Price", "Sale price"],
+        )
+        sold_date_raw = self._resolve_mapped_value(
+            row,
+            mapping,
+            "sold_date",
+            ["Paid On Date", "Sale Date", "Sold Date"],
+        )
+        quantity_raw = self._resolve_mapped_value(
+            row,
+            mapping,
+            "quantity",
+            ["Quantity"],
+        )
+        item_number = self._resolve_mapped_value(
+            row,
+            mapping,
+            "item_number",
+            ["Item Number"],
+        )
+
+        data: Dict[str, Any] = {
+            "order_number": order_number.strip()
+            if isinstance(order_number, str)
+            else order_number,
+            "title": title.strip() if isinstance(title, str) else title,
+            "sku": sku.strip() if isinstance(sku, str) else sku,
+            "sold_price": self._parse_float(sold_price_raw),
+            "sold_date": self._parse_date_iso(sold_date_raw),
+            "quantity": self._safe_int(quantity_raw, default=1),
+            "item_number": item_number.strip()
+            if isinstance(item_number, str) and item_number.strip()
+            else None,
+            "status": "Sold",
+        }
+        return data
+
+    def normalize_csv_file(
+        self,
+        filepath: str,
+        report_type: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        headers, rows = self._read_csv_rows(filepath)
+        detected_type = (report_type or self._detect_report_type(headers) or "").lower()
+        if detected_type not in {"orders", "active_listings"}:
+            detected_type = "active_listings"
+
+        mapping = self.get_mapping(detected_type)
+        normalized: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+
+        normalizer = (
+            self._normalize_order if detected_type == "orders" else self._normalize_active_listing
+        )
+
+        for index, row in enumerate(rows, start=2):
+            try:
+                normalized_row = normalizer(row, mapping)
+                if normalized_row:
+                    normalized.append(normalized_row)
+            except Exception as exc:
+                errors.append({"line": index, "error": str(exc)})
+
+        return {
+            "report_type": detected_type,
+            "normalized_rows": normalized,
+            "errors": errors,
+        }
+
+    def import_normalized(
+        self, report_type: str, rows: Iterable[Dict[str, Any]]
+    ) -> Dict[str, int]:
+        report_type = (report_type or "").lower()
+        stats = {"inserted": 0, "updated": 0, "skipped": 0, "errors": 0}
+
+        if report_type == "orders":
+            for row in rows:
+                sku = (row.get("sku") or "").strip()
+                title = (row.get("title") or "").strip()
+
+                record = None
+                if sku:
+                    self.cursor.execute(
+                        "SELECT id FROM inventory WHERE LOWER(COALESCE(sku, ''))=LOWER(?) LIMIT 1",
+                        (sku,),
+                    )
+                    record = self.cursor.fetchone()
+
+                if not record and title:
+                    self.cursor.execute(
+                        "SELECT id FROM inventory WHERE LOWER(title)=LOWER(?) LIMIT 1",
+                        (title,),
+                    )
+                    record = self.cursor.fetchone()
+
+                if not record:
+                    stats["skipped"] += 1
+                    continue
+
+                item_id = int(record["id"])
+                self.mark_item_as_sold(
+                    item_id,
+                    sold_price=row.get("sold_price"),
+                    sold_date=row.get("sold_date"),
+                    order_number=row.get("order_number"),
+                    quantity=row.get("quantity"),
+                )
+                stats["updated"] += 1
+
+            return stats
+
+        if report_type == "active_listings":
+            for row in rows:
+                sku = (row.get("sku") or "").strip()
+                if not sku:
+                    stats["skipped"] += 1
+                    continue
+
+                payload = {
+                    "title": row.get("title"),
+                    "sku": sku,
+                    "listed_price": row.get("listed_price"),
+                    "listed_date": row.get("listed_date"),
+                    "quantity": row.get("quantity"),
+                    "status": row.get("status") or "Listed",
+                    "item_number": row.get("item_number"),
+                    "category_id": row.get("category_id"),
+                }
+
+                self.cursor.execute(
+                    "SELECT id FROM inventory WHERE LOWER(COALESCE(sku, ''))=LOWER(?) LIMIT 1",
+                    (sku,),
+                )
+                existing = self.cursor.fetchone()
+                if existing:
+                    self.update_inventory_item(int(existing["id"]), payload)
+                    stats["updated"] += 1
+                else:
+                    self.add_inventory_item(payload)
+                    stats["inserted"] += 1
+
+            return stats
+
+        raise ValueError(f"Unsupported report type: {report_type}")
+
+    def update_mapping(self, report_type: str, mapping: Dict[str, str]) -> None:
+        if not report_type:
+            raise ValueError("report_type is required")
+        mapping = mapping or {}
+        cleaned = {
+            str(key): value
+            for key, value in mapping.items()
+            if value not in (None, "")
+        }
+        self.cursor.execute(
+            """
+            INSERT INTO import_mappings (report_type, mapping_json)
+            VALUES (?, ?)
+            ON CONFLICT(report_type) DO UPDATE SET mapping_json=excluded.mapping_json
+            """,
+            (report_type.lower(), json.dumps(cleaned)),
+        )
+        self.conn.commit()
+
+    def get_mapping(self, report_type: str) -> Dict[str, str]:
+        if not report_type:
+            return {}
+        self.cursor.execute(
+            "SELECT mapping_json FROM import_mappings WHERE report_type=?",
+            (report_type.lower(),),
+        )
+        row = self.cursor.fetchone()
+        if not row or not row["mapping_json"]:
+            return {}
+        try:
+            data = json.loads(row["mapping_json"])
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+        return {}
 
     # ---------------------------- data access ----------------------------
     def get_inventory_items(self, **kwargs):
