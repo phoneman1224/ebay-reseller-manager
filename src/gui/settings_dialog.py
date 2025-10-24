@@ -530,7 +530,7 @@ class SettingsDialog(QDialog):
                     checkbox.setChecked(sold_settings.get(key, True))
             
             # General settings
-            categories = settings.get("ebay_categories") or []
+            categories, default_category = self.db.get_configured_categories(settings)
             self.clear_category_rows()
             if categories:
                 for entry in categories:
@@ -542,11 +542,6 @@ class SettingsDialog(QDialog):
             else:
                 self.add_category_row(update=False)
 
-            default_category = settings.get("default_category_id")
-            if default_category in (None, ""):
-                stored_default = self.db.get_setting("default_category_id")
-                if stored_default not in (None, ""):
-                    default_category = stored_default
             self.update_default_category_options(default_category)
 
             income_rate = settings.get("income_tax_rate")

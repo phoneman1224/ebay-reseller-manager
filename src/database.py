@@ -5,7 +5,7 @@ import csv
 import json
 import sqlite3
 import datetime
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -1186,6 +1186,52 @@ class Database:
             }
             for row in rows
         ]
+
+    def get_configured_categories(
+        self, settings: Optional[Dict[str, Any]] = None
+    ) -> Tuple[List[Dict[str, Optional[str]]], Optional[str]]:
+        """Return sanitized category settings and the default selection.
+
+        Args:
+            settings: Optional settings payload to avoid re-fetching from the
+                database. When omitted, ``import_settings`` is loaded
+                automatically.
+
+        Returns:
+            A tuple containing the cleaned list of category entries and the
+            default category identifier (or ``None`` when not configured).
+        """
+
+        raw_settings: Dict[str, Any]
+        if isinstance(settings, dict):
+            raw_settings = settings
+        else:
+            raw_settings = self.get_import_settings()
+
+        def _clean(value: Any) -> Optional[str]:
+            if value in (None, ""):
+                return None
+            text = str(value).strip()
+            return text or None
+
+        categories: List[Dict[str, Optional[str]]] = []
+        raw_categories = raw_settings.get("ebay_categories")
+        if isinstance(raw_categories, list):
+            for entry in raw_categories:
+                if not isinstance(entry, dict):
+                    continue
+                name = _clean(entry.get("name"))
+                number = _clean(entry.get("number"))
+                if not name and not number:
+                    continue
+                categories.append({"name": name, "number": number})
+
+        default_category = _clean(raw_settings.get("default_category_id"))
+        if not default_category:
+            stored_default = self.get_setting("default_category_id")
+            default_category = _clean(stored_default)
+
+        return categories, default_category
 
     def get_sales_orders_v2(self) -> List[Dict[str, Any]]:
         self.cursor.execute(

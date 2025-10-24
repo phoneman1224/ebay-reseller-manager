@@ -118,25 +118,12 @@ class InventoryTab(QWidget):
         """Load configured eBay categories from settings."""
 
         try:
-            settings = self.db.get_import_settings()
+            categories, default_id = self.db.get_configured_categories()
         except Exception:
-            settings = {}
+            categories, default_id = [], None
 
-        categories = settings.get("ebay_categories")
-        if isinstance(categories, list):
-            self.category_entries = categories
-        else:
-            self.category_entries = []
-
-        default = settings.get("default_category_id")
-        if isinstance(default, str):
-            default = default.strip()
-        if not default:
-            stored_default = self.db.get_setting("default_category_id")
-            if stored_default not in (None, ""):
-                default = str(stored_default).strip()
-
-        self.default_category_id = default or None
+        self.category_entries = categories or []
+        self.default_category_id = default_id or None
 
     def _category_lookup(self) -> Dict[str, str]:
         """Return a mapping of category numbers to display names."""
@@ -635,25 +622,12 @@ class AddEditItemDialog(QDialog):
         """Load reusable category options from settings."""
 
         try:
-            settings = self.db.get_import_settings()
+            categories, default_id = self.db.get_configured_categories()
         except Exception:
-            settings = {}
+            categories, default_id = [], None
 
-        categories = settings.get("ebay_categories")
-        if isinstance(categories, list):
-            self.category_entries = categories
-        else:
-            self.category_entries = []
-
-        default = settings.get("default_category_id")
-        if isinstance(default, str):
-            default = default.strip()
-        if not default:
-            stored = self.db.get_setting("default_category_id")
-            if stored not in (None, ""):
-                default = str(stored).strip()
-
-        self.default_category_id = default or None
+        self.category_entries = categories or []
+        self.default_category_id = default_id or None
 
     def _populate_category_combo(self, selected: str = None) -> None:
         if not hasattr(self, "category_combo"):
