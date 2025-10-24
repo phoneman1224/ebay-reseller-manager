@@ -1680,6 +1680,83 @@ class Database:
         self.cursor.execute("DELETE FROM error_logs")
         self.conn.commit()
 
+    def get_import_settings(self) -> Dict[str, Any]:
+        """Return structured application settings stored as JSON."""
+
+        try:
+            self.cursor.execute(
+                "SELECT value FROM settings WHERE key=?",
+                ("import_settings",),
+            )
+            row = self.cursor.fetchone()
+            if not row or row["value"] in (None, ""):
+                return {}
+            try:
+                data = json.loads(row["value"])
+            except (TypeError, json.JSONDecodeError):
+                self.log_error(
+                    "get_import_settings",
+                    "Stored import_settings could not be parsed as JSON",
+                )
+                return {}
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            self.log_error("get_import_settings", str(exc))
+            return {}
+
+    def update_import_settings(self, settings: Dict[str, Any]) -> None:
+        """Persist structured application settings and derived scalar values."""
+
+        payload = json.dumps(settings or {})
+        try:
+            self.cursor.execute(
+                """
+                INSERT INTO settings (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """,
+                ("import_settings", payload),
+            )
+            self.conn.commit()
+        except Exception as exc:
+            self.log_error("update_import_settings", str(exc))
+            raise
+
+        def _store_decimal(key: str, value: Any, *, is_percent: bool = False) -> None:
+            if value in (None, ""):
+                return
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return
+            if is_percent:
+                numeric /= 100.0
+            # Normalise representation to avoid lingering trailing zeros.
+            text = (f"{numeric:.6f}").rstrip("0").rstrip(".")
+            self.set_setting(key, text if text else "0")
+
+        # Persist commonly-used scalar values so other modules can read them
+        # without decoding the JSON payload each time.
+        _store_decimal("income_tax_rate", settings.get("income_tax_rate"), is_percent=True)
+        _store_decimal(
+            "self_employment_tax_rate",
+            settings.get("self_employment_tax_rate"),
+            is_percent=True,
+        )
+        _store_decimal("ebay_fee_percent", settings.get("ebay_fee_percent"), is_percent=True)
+        _store_decimal("ebay_fee_fixed", settings.get("ebay_fee_fixed"))
+        _store_decimal(
+            "payment_fee_percent", settings.get("payment_fee_percent"), is_percent=True
+        )
+        _store_decimal("payment_fee_fixed", settings.get("payment_fee_fixed"))
+        default_category = settings.get("default_category_id")
+        if default_category not in (None, ""):
+            self.set_setting("default_category_id", str(default_category))
+
+        compact_mode = settings.get("compact_mode")
+        if isinstance(compact_mode, bool):
+            self.set_setting("compact_mode", "1" if compact_mode else "0")
+
     def get_setting(self, key: str, default: str = None) -> Optional[str]:
         """Get a setting value by key.
 
