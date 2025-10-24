@@ -4,7 +4,22 @@ from __future__ import annotations
 from typing import Any, Mapping, Optional
 
 
-def resolve_cost(record: Mapping[str, Any]) -> Optional[float]:
+def _ensure_mapping(record: Any) -> Mapping[str, Any]:
+    """Return ``record`` as a mapping when possible."""
+
+    if record is None:
+        return {}
+    if isinstance(record, Mapping):
+        return record
+    try:
+        return dict(record)
+    except Exception:
+        # Fall back to an empty mapping so callers receive ``None`` from
+        # ``resolve_cost`` rather than crashing.
+        return {}
+
+
+def resolve_cost(record: Mapping[str, Any] | Any) -> Optional[float]:
     """Return the best cost value for an inventory record.
 
     The database may expose the purchase amount under a variety of keys
@@ -13,8 +28,10 @@ def resolve_cost(record: Mapping[str, Any]) -> Optional[float]:
     can safely perform calculations.
     """
 
+    mapping = _ensure_mapping(record)
+
     for key in ("purchase_cost", "cost", "purchase_price"):
-        value = record.get(key)
+        value = mapping.get(key)
         if value in (None, ""):
             continue
         try:
