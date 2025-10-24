@@ -20,7 +20,7 @@ class InventoryCategoryStatusMixin:
         self.combo_category.clear()
         rows = self._cat_svc.list_categories()
         for _, cat_id, name in rows:
-            self.combo_category.addItem(f'{{name}} ({{cat_id}})'.format(name=name, cat_id=cat_id), userData=cat_id)
+            self.combo_category.addItem(f"{name} ({cat_id})", userData=cat_id)
 
     def load_item_into_form(self, item_row: tuple):
         if not item_row:
