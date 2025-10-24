@@ -108,11 +108,28 @@ class TestDatabase(unittest.TestCase):
             'condition': 'New',
             'status': 'In Stock'
         })
-        
+
         # Check value
         value = self.db.get_inventory_value()
         self.assertEqual(value, 25.00)
-    
+
+    def test_get_inventory_value_ignores_bad_numbers(self):
+        """Text placeholders should not crash inventory valuation."""
+
+        self.db.add_inventory_item({
+            'title': 'Problematic Item',
+            'purchase_price': 'not-a-number',
+            'status': 'In Stock'
+        })
+        self.db.add_inventory_item({
+            'title': 'Listed Item',
+            'listed_price': '19.99',
+            'status': 'Listed'
+        })
+
+        value = self.db.get_inventory_value()
+        self.assertAlmostEqual(value, 19.99)
+
     def test_mark_item_as_sold(self):
         """Test marking item as sold"""
         # Add test item
