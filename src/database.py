@@ -210,6 +210,15 @@ class Database:
             """
         )
 
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
+
         self._ensure_inventory_columns()
         self._ensure_min_inventory_orders_schema()
         self.conn.commit()
@@ -1499,6 +1508,46 @@ class Database:
         """Clear all error logs from the database."""
         self.cursor.execute("DELETE FROM error_logs")
         self.conn.commit()
+
+    def get_setting(self, key: str, default: str = None) -> Optional[str]:
+        """Get a setting value by key.
+
+        Args:
+            key: The setting key
+            default: Default value if key doesn't exist
+
+        Returns:
+            The setting value or default if not found
+        """
+        try:
+            self.cursor.execute("SELECT value FROM settings WHERE key=?", (key,))
+            row = self.cursor.fetchone()
+            if row and row["value"] is not None:
+                return row["value"]
+            return default
+        except Exception as e:
+            self.log_error("get_setting", f"Failed to get setting {key}: {str(e)}")
+            return default
+
+    def set_setting(self, key: str, value: str):
+        """Set a setting value.
+
+        Args:
+            key: The setting key
+            value: The setting value
+        """
+        try:
+            self.cursor.execute(
+                """
+                INSERT INTO settings (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """,
+                (key, value)
+            )
+            self.conn.commit()
+        except Exception as e:
+            self.log_error("set_setting", f"Failed to set setting {key}: {str(e)}")
+            raise
 
     def close(self):
         """Close the database connection."""
