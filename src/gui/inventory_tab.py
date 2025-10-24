@@ -65,21 +65,26 @@ class InventoryTab(QWidget):
             "Purchase Cost", "Listed Price", "Status", "Location", "Notes", "Actions"
         ])
         
-        # Configure the header so that columns resize intelligently. Columns
-        # containing variable‑length text (Title and Notes) stretch to fill any
-        # remaining space, while the others size themselves to fit their
-        # contents. This approach removes the hard‑coded pixel widths which
-        # previously led to cramped or truncated text on some screens. Users
-        # can still manually resize columns if desired.
+        # Configure columns to be resizable by the user
         header = self.table.horizontalHeader()
-        # Default all columns to resize to contents
+        # Make all columns user-resizable
         for col in range(self.table.columnCount()):
-            header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
-        # Stretch the Title and Notes columns
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)  # Title
-        header.setSectionResizeMode(10, QHeaderView.ResizeMode.Stretch) # Notes
-        # The last column contains action buttons; let it size to contents
-        header.setSectionResizeMode(11, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+        # Set reasonable initial widths for better UX
+        header.resizeSection(0, 50)   # ID
+        header.resizeSection(1, 250)  # Title
+        header.resizeSection(2, 120)  # Category
+        header.resizeSection(3, 100)  # SKU
+        header.resizeSection(4, 150)  # Brand/Model
+        header.resizeSection(5, 100)  # Condition
+        header.resizeSection(6, 100)  # Purchase Cost
+        header.resizeSection(7, 100)  # Listed Price
+        header.resizeSection(8, 80)   # Status
+        header.resizeSection(9, 100)  # Location
+        header.resizeSection(10, 200) # Notes
+        header.resizeSection(11, 100) # Actions
+        # Allow the header to stretch the last section to fill remaining space
+        header.setStretchLastSection(True)
 
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)

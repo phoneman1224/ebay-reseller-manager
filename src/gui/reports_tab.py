@@ -13,13 +13,6 @@ from PyQt6.QtWidgets import (
     QMessageBox, QSizePolicy
 )
 
-# Optional mapping editor (ok if missing)
-try:
-    from .import_mapping_dialog import ImportMappingDialog
-    HAVE_MAPPING_DIALOG = True
-except Exception:
-    HAVE_MAPPING_DIALOG = False
-
 
 class ReportsTab(QWidget):
     def __init__(self, db, parent=None):
@@ -42,11 +35,9 @@ class ReportsTab(QWidget):
         # LEFT
         quick_group = self._build_quick_reports_group()
         analytics_group = self._build_business_analytics_group()
-        import_group = self._build_ebay_import_group(compact=True)  # MOVED LEFT
 
         grid.addWidget(quick_group,     0, 0)
         grid.addWidget(analytics_group, 1, 0)
-        grid.addWidget(import_group,    2, 0)
 
         # RIGHT
         custom_group = self._build_custom_export_group()
@@ -133,45 +124,6 @@ class ReportsTab(QWidget):
         v.addWidget(self.log_view)
         return g
 
-    def _build_ebay_import_group(self, compact: bool=False) -> QGroupBox:
-        title = "eBay Import (Database-Normalized)"
-        g = QGroupBox(title)
-        g.setStyleSheet("QGroupBox{font-size:13px;margin-top:6px;}QGroupBox::title{left:6px;padding:2px 4px;}")
-        f = QFormLayout(g); f.setContentsMargins(8,6,8,6); f.setVerticalSpacing(6); f.setHorizontalSpacing(8)
-
-        self.ebay_csv_path = QLineEdit()
-        self.ebay_csv_path.setPlaceholderText("Select any eBay CSV (Active, Orders, etc.)")
-        browse = QPushButton("Browse…"); browse.setStyleSheet(self._btn_style()); browse.clicked.connect(self.browse_ebay_csv)
-
-        rowp = QWidget(); rpl = QHBoxLayout(rowp); rpl.setContentsMargins(0,0,0,0); rpl.setSpacing(6)
-        rpl.addWidget(self.ebay_csv_path); rpl.addWidget(browse)
-        f.addRow("CSV file:", rowp)
-
-        self.chk_dry = QCheckBox("Dry run (preview only)"); self.chk_dry.setChecked(True)
-        f.addRow("", self.chk_dry)
-
-        # Vertical stack so nothing squishes
-        self.btn_detect = QPushButton("Detect & Preview"); self.btn_detect.setMinimumHeight(32)
-        self.btn_detect.setStyleSheet(self._btn_style()); self.btn_detect.clicked.connect(self.preview_import)
-        f.addRow(self.btn_detect)
-
-        self.btn_import = QPushButton("Import Now"); self.btn_import.setMinimumHeight(32)
-        self.btn_import.setStyleSheet(self._btn_style()); self.btn_import.clicked.connect(self.execute_import)
-        f.addRow(self.btn_import)
-
-        self.btn_mapping = QPushButton("Edit Mapping…"); self.btn_mapping.setMinimumHeight(32)
-        self.btn_mapping.setStyleSheet(self._btn_style()); self.btn_mapping.clicked.connect(self.edit_mapping)
-        self.btn_mapping.setEnabled(HAVE_MAPPING_DIALOG)
-        f.addRow(self.btn_mapping)
-
-        self.preview_box = QTextEdit(); self.preview_box.setReadOnly(True)
-        self.preview_box.setFixedHeight(150)   # bigger so you can actually see rows
-        f.addRow("Preview:", self.preview_box)
-
-        if compact:
-            g.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        return g
-
     # ------------------------------ Actions
 
     def log(self, msg: str):
@@ -253,72 +205,3 @@ class ReportsTab(QWidget):
             )
         except Exception:
             self.analytics_box.setPlainText("Analytics unavailable.")
-
-    # eBay Import
-    def browse_ebay_csv(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select eBay CSV", "", "CSV Files (*.csv)")
-        if path: self.ebay_csv_path.setText(path)
-
-    def preview_import(self):
-        path = self.ebay_csv_path.text().strip()
-        if not path: return QMessageBox.warning(self, "Choose file", "Please select an eBay CSV.")
-        if not hasattr(self.db, "normalize_csv_file"):
-            return QMessageBox.warning(self, "Not available", "Database normalize method not found.")
-        try:
-            res = self.db.normalize_csv_file(path, report_type=None, dry_run=True)
-            rtype = res.get("report_type"); rows = res.get("normalized_rows", []); warns = res.get("warnings", [])
-            self.preview_box.clear()
-            self.preview_box.append(f"Detected report type: {rtype or 'Unknown'}")
-            self.preview_box.append(f"Rows parsed: {len(rows)}")
-            if warns:
-                self.preview_box.append("Warnings:")
-                for w in warns[:10]: self.preview_box.append(f"  - {w}")
-            for i, r in enumerate(rows[:10]):  # show more lines now
-                self.preview_box.append(f"{i+1}. {r}")
-        except Exception as e:
-            QMessageBox.critical(self, "Preview failed", str(e))
-
-    def execute_import(self):
-        path = self.ebay_csv_path.text().strip()
-        if not path: return QMessageBox.warning(self, "Choose file", "Please select an eBay CSV.")
-        if not (hasattr(self.db, "normalize_csv_file") and hasattr(self.db, "import_normalized")):
-            return QMessageBox.warning(self, "Not available", "Import/normalize methods not found.")
-        try:
-            res = self.db.normalize_csv_file(path, report_type=None, dry_run=True)
-            rtype = res.get("report_type"); rows = res.get("normalized_rows", [])
-            if not rtype: return QMessageBox.warning(self, "Unknown type", "Could not detect report type. Adjust mapping and try again.")
-            if not rows:  return QMessageBox.warning(self, "No rows", "No rows were parsed. Check mapping.")
-            stats = self.db.import_normalized(rtype, rows)
-            self.preview_box.append(f"Imported: {stats}")
-            QMessageBox.information(self, "Done", f"Import completed.\n{stats}")
-            # Refresh UI: prefer calling the main window's refresh_all_tabs if available
-            try:
-                # Walk up parents to find the MainWindow which exposes refresh_all_tabs
-                p = self.parent()
-                while p is not None and not hasattr(p, 'refresh_all_tabs'):
-                    p = getattr(p, 'parent', lambda: None)()
-                if p and hasattr(p, 'refresh_all_tabs'):
-                    p.refresh_all_tabs()
-                else:
-                    # Fallback: attempt to call common refresh methods directly
-                    try:
-                        if hasattr(self.parent().parent(), 'inventory_tab'):
-                            self.parent().parent().inventory_tab.refresh_data()
-                    except Exception:
-                        pass
-                    try:
-                        if hasattr(self.parent().parent(), 'sold_items_tab'):
-                            self.parent().parent().sold_items_tab.load_sold_items()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-            self.load_analytics()
-        except Exception as e:
-            QMessageBox.critical(self, "Import failed", str(e))
-
-    def edit_mapping(self):
-        if not HAVE_MAPPING_DIALOG:
-            return QMessageBox.information(self, "Mapping Editor", "Mapping dialog isn't installed in this build.")
-        ImportMappingDialog(self.db, self).exec()
