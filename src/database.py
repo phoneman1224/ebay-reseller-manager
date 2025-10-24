@@ -74,6 +74,23 @@ class Database:
             self.log_error("Database initialization failed", str(e))
             raise
 
+    @staticmethod
+    def _coerce_float(value: Any) -> Optional[float]:
+        """Return ``value`` as ``float`` when possible.
+
+        Inventory data historically mixes numeric and text representations –
+        particularly when CSV imports have been manually edited.  Returning
+        ``None`` instead of raising keeps dashboard calculations resilient to
+        these legacy records.
+        """
+
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     def _row_to_dict(self, row: Any) -> Optional[Dict[str, Any]]:
         """Convert a sqlite3.Row (or similar mapping) to a plain dict.
 
@@ -643,16 +660,18 @@ class Database:
         rows = self.cursor.fetchall()
         total = 0.0
         for row in rows:
-            status = (row["status"] or "").lower()
-            if status == "listed" and row["listed_price"] is not None:
-                total += float(row["listed_price"])
-                continue
+            status = (row["status"] or "").strip().lower()
+            if status == "listed":
+                listed_price = self._coerce_float(row["listed_price"])
+                if listed_price is not None:
+                    total += listed_price
+                    continue
 
-            cost_val = row["cost"]
+            cost_val = self._coerce_float(row["cost"])
             if cost_val is None:
-                cost_val = row["purchase_price"]
+                cost_val = self._coerce_float(row["purchase_price"])
             if cost_val is not None:
-                total += float(cost_val)
+                total += cost_val
 
         return float(total)
 

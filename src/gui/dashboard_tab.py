@@ -10,6 +10,28 @@ from datetime import datetime
 from .value_helpers import resolve_cost, format_currency
 
 
+def _safe_float(value, default=0.0):
+    """Convert ``value`` to ``float`` while swallowing invalid entries."""
+
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default=0):
+    """Convert ``value`` to ``int`` while tolerating bad inputs."""
+
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class DashboardTab(QWidget):
     def __init__(self, db):
         super().__init__()
@@ -209,7 +231,7 @@ class DashboardTab(QWidget):
         inventory_items = [dict(item) for item in self.db.get_inventory_items(status='In Stock')]
         inventory_value = self.db.get_inventory_value()
         inventory_count = len(inventory_items)
-        
+
         self.inventory_card.main_label.setText(f"{inventory_count} items")
         # Shorten "Value" to "Val" to save space
         self.inventory_card.sub_label.setText(f"Val: ${inventory_value:.2f}")
@@ -218,7 +240,7 @@ class DashboardTab(QWidget):
         total_revenue = self.db.get_total_revenue(current_year)
         sales = [dict(row) for row in self.db.get_sales()]
         year_sales = [s for s in sales if (s.get('sold_date') or '').startswith(str(current_year))]
-        sales_count = sum(int(s.get('quantity') or 1) for s in year_sales)
+        sales_count = sum(_safe_int(s.get('quantity'), default=1) for s in year_sales)
         
         self.revenue_card.main_label.setText(f"${total_revenue:.2f}")
         # Display sales count with "YTD" abbreviation for Year‑To‑Date
@@ -227,7 +249,7 @@ class DashboardTab(QWidget):
         # Expenses metrics
         all_expenses = [dict(expense) for expense in self.db.get_expenses()]
         year_expenses = [e for e in all_expenses if (e.get('date') or '').startswith(str(current_year))]
-        total_expenses = sum(float(e.get('amount') or 0) for e in year_expenses)
+        total_expenses = sum(_safe_float(e.get('amount')) for e in year_expenses)
         deductible_expenses = self.db.get_total_deductible_expenses(current_year)
         
         self.expenses_card.main_label.setText(f"${total_expenses:.2f}")
@@ -251,7 +273,7 @@ class DashboardTab(QWidget):
         self_employment_tax = taxable_income * 0.153
         
         # Estimated income tax (using 22% as rough estimate - user should set their bracket)
-        income_tax_rate = float(self.db.get_setting('income_tax_rate', '0.22'))
+        income_tax_rate = _safe_float(self.db.get_setting('income_tax_rate', '0.22'), default=0.22)
         estimated_income_tax = taxable_income * income_tax_rate
         
         total_tax_liability = self_employment_tax + estimated_income_tax
@@ -295,7 +317,7 @@ class DashboardTab(QWidget):
                 sold_price = sale.get('sold_price')
                 sold_price_text = f"${sold_price:.2f}" if isinstance(sold_price, (int, float)) else "N/A"
                 sold_date = sale.get('sold_date') or 'N/A'
-                quantity = int(sale.get('quantity') or 1)
+                quantity = _safe_int(sale.get('quantity'), default=1)
                 quantity_suffix = f" x{quantity}" if quantity > 1 else ""
                 activity_text += f"• {title}{quantity_suffix}: {sold_price_text} ({sold_date})<br>"
 
