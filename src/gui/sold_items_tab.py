@@ -99,11 +99,23 @@ class SoldItemsTab(QWidget):
             "Actions"
         ])
         
-        # Set column widths
+        # Configure columns to be resizable by the user
         header = self.sold_table.horizontalHeader()
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)  # Title column
-        for i in [0, 2, 3, 4, 5, 6, 7, 8]:  # Other columns fixed
-            header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+        # Make all columns user-resizable
+        for col in range(self.sold_table.columnCount()):
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+        # Set reasonable initial widths for better UX
+        header.resizeSection(0, 100)  # Sold Date
+        header.resizeSection(1, 250)  # Title
+        header.resizeSection(2, 110)  # Purchase Cost
+        header.resizeSection(3, 100)  # Sold Price
+        header.resizeSection(4, 100)  # Platform
+        header.resizeSection(5, 80)   # Fees
+        header.resizeSection(6, 100)  # Net Profit
+        header.resizeSection(7, 80)   # Margin %
+        header.resizeSection(8, 100)  # Actions
+        # Allow the header to stretch the last section to fill remaining space
+        header.setStretchLastSection(True)
         
         self.sold_table.setAlternatingRowColors(True)
         self.sold_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
