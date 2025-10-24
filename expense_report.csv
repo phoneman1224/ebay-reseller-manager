@@ -1,0 +1,4 @@
+id,date,amount,category,note,tax_deductible,payment_method,vendor,description,notes,receipt_path
+3,2025-10-24,12315.0,Mileage/Travel,,1,Cash,,,,
+2,2025-10-24,200.0,Inventory Purchase,,1,Cash,,,,
+1,2025-10-24,1000.0,Inventory Purchase,,1,Cash,,,,
