@@ -1043,6 +1043,19 @@ class Database:
             self.log_error("get_expense_inventory_links", str(e))
             return []
 
+    def get_inventory_items_for_expense(self, expense_id: int) -> List[Dict[str, Any]]:
+        """Get all inventory items linked to an expense (alias for get_expense_inventory_links).
+
+        This is a convenience method used by the expenses UI.
+
+        Args:
+            expense_id: The expense ID
+
+        Returns:
+            List of dictionaries containing linked inventory items with allocated amounts
+        """
+        return self.get_expense_inventory_links(expense_id)
+
     def mark_item_as_sold(self, item_id: int, sold_price: float = None, sold_date: str = None,
                           order_number: str = None, quantity: int = None, **kwargs):
         """Mark an inventory item as sold."""
