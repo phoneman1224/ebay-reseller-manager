@@ -157,6 +157,7 @@ class Database:
                 description TEXT,
                 category_id TEXT,
                 purchase_price REAL,
+                purchase_date TEXT,
                 cost REAL,
                 item_number TEXT,
                 location TEXT,
@@ -173,7 +174,8 @@ class Database:
                 amount REAL,
                 category TEXT,
                 note TEXT,
-                tax_deductible INTEGER DEFAULT 0
+                tax_deductible INTEGER DEFAULT 0,
+                payment_method TEXT
             )
             """
         )
@@ -220,6 +222,7 @@ class Database:
         )
 
         self._ensure_inventory_columns()
+        self._ensure_expenses_columns()
         self._ensure_min_inventory_orders_schema()
         self.conn.commit()
 
@@ -230,6 +233,7 @@ class Database:
         for col, ddl in {
             "quantity": "INTEGER DEFAULT 1",
             "purchase_price": "REAL",
+            "purchase_date": "TEXT",
             "cost": "REAL",
             "item_number": "TEXT",
             "location": "TEXT",
@@ -239,6 +243,19 @@ class Database:
             if col not in cols:
                 try:
                     self.cursor.execute(f"ALTER TABLE inventory ADD COLUMN {col} {ddl}")
+                except Exception:
+                    pass
+
+    def _ensure_expenses_columns(self):
+        """Ensure legacy DBs have all expenses columns."""
+        self.cursor.execute("PRAGMA table_info(expenses)")
+        cols = {r["name"] for r in self.cursor.fetchall()}
+        for col, ddl in {
+            "payment_method": "TEXT",
+        }.items():
+            if col not in cols:
+                try:
+                    self.cursor.execute(f"ALTER TABLE expenses ADD COLUMN {col} {ddl}")
                 except Exception:
                     pass
 
