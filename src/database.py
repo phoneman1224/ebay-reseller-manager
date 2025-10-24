@@ -699,6 +699,18 @@ class Database:
         self.cursor.execute("SELECT * FROM expenses ORDER BY date DESC, id DESC")
         return self._rows_to_dicts(self.cursor.fetchall())
 
+    def get_expense(self, expense_id: int) -> Optional[Dict[str, Any]]:
+        """Get a single expense by ID.
+
+        Args:
+            expense_id: The expense ID
+
+        Returns:
+            Dictionary containing expense data or None if not found
+        """
+        self.cursor.execute("SELECT * FROM expenses WHERE id=?", (expense_id,))
+        return self._row_to_dict(self.cursor.fetchone())
+
     def get_sold_items(self, *args, **kwargs):
         """Return sold inventory items."""
         kwargs = dict(kwargs or {})
