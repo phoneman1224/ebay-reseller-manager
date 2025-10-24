@@ -144,6 +144,7 @@ class Database:
                 title TEXT,
                 sku TEXT UNIQUE,
                 brand TEXT,
+                model TEXT,
                 condition TEXT,
                 listed_price REAL,
                 listed_date TEXT,
@@ -153,15 +154,22 @@ class Database:
                 quantity INTEGER DEFAULT 1,
                 order_number TEXT,
                 upc TEXT,
+                upc_isbn TEXT,
                 image_url TEXT,
                 description TEXT,
                 category_id TEXT,
                 purchase_price REAL,
                 purchase_date TEXT,
+                purchase_source TEXT,
                 cost REAL,
                 item_number TEXT,
                 location TEXT,
-                notes TEXT
+                notes TEXT,
+                weight_lbs REAL,
+                length_in REAL,
+                width_in REAL,
+                height_in REAL,
+                expense_id INTEGER
             )
             """
         )
@@ -173,9 +181,13 @@ class Database:
                 date TEXT,
                 amount REAL,
                 category TEXT,
-                note TEXT,
+                vendor TEXT,
+                payment_method TEXT,
                 tax_deductible INTEGER DEFAULT 0,
-                payment_method TEXT
+                description TEXT,
+                note TEXT,
+                notes TEXT,
+                receipt_path TEXT
             )
             """
         )
@@ -186,6 +198,7 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 expense_id INTEGER NOT NULL,
                 inventory_id INTEGER NOT NULL,
+                allocated_amount REAL,
                 FOREIGN KEY (expense_id) REFERENCES expenses(id) ON DELETE CASCADE,
                 FOREIGN KEY (inventory_id) REFERENCES inventory(id) ON DELETE CASCADE
             )
@@ -223,6 +236,7 @@ class Database:
 
         self._ensure_inventory_columns()
         self._ensure_expenses_columns()
+        self._ensure_expense_inventory_columns()
         self._ensure_min_inventory_orders_schema()
         self.conn.commit()
 
@@ -234,11 +248,19 @@ class Database:
             "quantity": "INTEGER DEFAULT 1",
             "purchase_price": "REAL",
             "purchase_date": "TEXT",
+            "purchase_source": "TEXT",
             "cost": "REAL",
             "item_number": "TEXT",
             "location": "TEXT",
             "notes": "TEXT",
             "brand": "TEXT",
+            "model": "TEXT",
+            "upc_isbn": "TEXT",
+            "weight_lbs": "REAL",
+            "length_in": "REAL",
+            "width_in": "REAL",
+            "height_in": "REAL",
+            "expense_id": "INTEGER",
         }.items():
             if col not in cols:
                 try:
@@ -252,12 +274,33 @@ class Database:
         cols = {r["name"] for r in self.cursor.fetchall()}
         for col, ddl in {
             "payment_method": "TEXT",
+            "vendor": "TEXT",
+            "description": "TEXT",
+            "notes": "TEXT",
+            "receipt_path": "TEXT",
         }.items():
             if col not in cols:
                 try:
                     self.cursor.execute(f"ALTER TABLE expenses ADD COLUMN {col} {ddl}")
                 except Exception:
                     pass
+
+    def _ensure_expense_inventory_columns(self):
+        """Ensure legacy DBs have all expense_inventory columns."""
+        try:
+            self.cursor.execute("PRAGMA table_info(expense_inventory)")
+            cols = {r["name"] for r in self.cursor.fetchall()}
+            for col, ddl in {
+                "allocated_amount": "REAL",
+            }.items():
+                if col not in cols:
+                    try:
+                        self.cursor.execute(f"ALTER TABLE expense_inventory ADD COLUMN {col} {ddl}")
+                    except Exception:
+                        pass
+        except Exception:
+            # Table might not exist in very old databases
+            pass
 
     def _ensure_min_inventory_orders_schema(self) -> None:
         """Create additive tables for the minimum inventory/orders feature."""
@@ -926,6 +969,67 @@ class Database:
         """Delete an expense."""
         self.cursor.execute("DELETE FROM expenses WHERE id=?", (expense_id,))
         self.conn.commit()
+
+    def add_expense_inventory_link(self, expense_id: int, inventory_id: int, allocated_amount: float = None):
+        """Link an expense to an inventory item.
+
+        Args:
+            expense_id: The expense ID
+            inventory_id: The inventory item ID
+            allocated_amount: Optional amount allocated from expense to this item
+        """
+        try:
+            self.cursor.execute(
+                """
+                INSERT INTO expense_inventory (expense_id, inventory_id, allocated_amount)
+                VALUES (?, ?, ?)
+                """,
+                (expense_id, inventory_id, allocated_amount)
+            )
+            self.conn.commit()
+        except Exception as e:
+            self.log_error("add_expense_inventory_link", str(e))
+            raise
+
+    def clear_expense_inventory_links(self, expense_id: int):
+        """Remove all inventory links for an expense.
+
+        Args:
+            expense_id: The expense ID
+        """
+        try:
+            self.cursor.execute(
+                "DELETE FROM expense_inventory WHERE expense_id=?",
+                (expense_id,)
+            )
+            self.conn.commit()
+        except Exception as e:
+            self.log_error("clear_expense_inventory_links", str(e))
+            raise
+
+    def get_expense_inventory_links(self, expense_id: int) -> List[Dict[str, Any]]:
+        """Get all inventory items linked to an expense.
+
+        Args:
+            expense_id: The expense ID
+
+        Returns:
+            List of dictionaries containing linked inventory items with allocated amounts
+        """
+        try:
+            self.cursor.execute(
+                """
+                SELECT ei.*, i.*
+                FROM expense_inventory ei
+                JOIN inventory i ON ei.inventory_id = i.id
+                WHERE ei.expense_id=?
+                """,
+                (expense_id,)
+            )
+            return self._rows_to_dicts(self.cursor.fetchall())
+        except Exception as e:
+            self.log_error("get_expense_inventory_links", str(e))
+            return []
 
     def mark_item_as_sold(self, item_id: int, sold_price: float = None, sold_date: str = None,
                           order_number: str = None, quantity: int = None, **kwargs):
