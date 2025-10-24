@@ -711,6 +711,44 @@ class Database:
         self.cursor.execute("SELECT * FROM expenses WHERE id=?", (expense_id,))
         return self._row_to_dict(self.cursor.fetchone())
 
+    def get_expense_inventory_count(self, expense_id: int) -> int:
+        """Return how many inventory items are linked to an expense."""
+
+        try:
+            self.cursor.execute(
+                "SELECT COUNT(*) AS count FROM expense_inventory WHERE expense_id=?",
+                (expense_id,),
+            )
+            row = self.cursor.fetchone()
+            return int(row["count"]) if row else 0
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self.log_error("get_expense_inventory_count", str(exc))
+            return 0
+
+    def get_inventory_items_for_expense(self, expense_id: int) -> List[Dict[str, Any]]:
+        """Return inventory items linked to the given expense.
+
+        The expenses UI expects each entry to behave like a standard inventory
+        record with an additional ``allocated_amount`` key representing the
+        optional portion of the expense assigned to the item.
+        """
+
+        try:
+            self.cursor.execute(
+                """
+                SELECT i.*, ei.allocated_amount
+                FROM expense_inventory ei
+                JOIN inventory i ON ei.inventory_id = i.id
+                WHERE ei.expense_id=?
+                ORDER BY i.title COLLATE NOCASE, i.id DESC
+                """,
+                (expense_id,),
+            )
+            return self._rows_to_dicts(self.cursor.fetchall())
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self.log_error("get_inventory_items_for_expense", str(exc))
+            return []
+
     def get_sold_items(self, *args, **kwargs):
         """Return sold inventory items."""
         kwargs = dict(kwargs or {})
