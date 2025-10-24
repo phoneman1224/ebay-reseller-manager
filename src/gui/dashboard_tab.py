@@ -269,9 +269,13 @@ class DashboardTab(QWidget):
         # This is a rough estimate
         taxable_income = max(0, total_profit)
         
-        # Self-employment tax (15.3% on net profit)
-        self_employment_tax = taxable_income * 0.153
-        
+        se_tax_rate = _safe_float(
+            self.db.get_setting('self_employment_tax_rate', '0.153'),
+            default=0.153,
+        )
+        # Self-employment tax uses the configurable rate stored in settings.
+        self_employment_tax = taxable_income * se_tax_rate
+
         # Estimated income tax (using 22% as rough estimate - user should set their bracket)
         income_tax_rate = _safe_float(self.db.get_setting('income_tax_rate', '0.22'), default=0.22)
         estimated_income_tax = taxable_income * income_tax_rate

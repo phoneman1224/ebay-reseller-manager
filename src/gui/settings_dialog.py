@@ -5,7 +5,8 @@ Allows users to show/hide columns and cards
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLabel, QGroupBox, QCheckBox, QScrollArea,
                              QWidget, QTabWidget, QMessageBox, QFormLayout,
-                             QLineEdit, QSpinBox, QComboBox, QDialogButtonBox)
+                             QLineEdit, QSpinBox, QComboBox, QDialogButtonBox,
+                             QDoubleSpinBox)
 from PyQt6.QtCore import Qt
 import json
 
@@ -299,12 +300,12 @@ class SettingsDialog(QDialog):
         self.income_tax_rate.setMaximum(50)
         self.income_tax_rate.setValue(22)
         tax_layout.addRow("Income Tax Rate:", self.income_tax_rate)
-        
-        self.se_tax_rate = QSpinBox()
+
+        self.se_tax_rate = QDoubleSpinBox()
         self.se_tax_rate.setSuffix("%")
-        self.se_tax_rate.setMaximum(20)
-        self.se_tax_rate.setValue(15)
-        self.se_tax_rate.setEnabled(False)
+        self.se_tax_rate.setDecimals(2)
+        self.se_tax_rate.setMaximum(30.0)
+        self.se_tax_rate.setValue(15.30)
         tax_layout.addRow("Self-Employment Tax:", self.se_tax_rate)
         
         tax_info = QLabel("These rates are used for tax liability estimates on the dashboard.")
@@ -314,6 +315,48 @@ class SettingsDialog(QDialog):
         
         tax_group.setLayout(tax_layout)
         layout.addWidget(tax_group)
+
+        # Fee Settings
+        fees_group = QGroupBox("Fee Settings")
+        fees_layout = QFormLayout()
+
+        self.ebay_fee_percent = QDoubleSpinBox()
+        self.ebay_fee_percent.setSuffix("%")
+        self.ebay_fee_percent.setDecimals(2)
+        self.ebay_fee_percent.setMaximum(30.0)
+        self.ebay_fee_percent.setValue(12.90)
+        fees_layout.addRow("eBay Final Value Fee:", self.ebay_fee_percent)
+
+        self.ebay_fee_fixed = QDoubleSpinBox()
+        self.ebay_fee_fixed.setPrefix("$")
+        self.ebay_fee_fixed.setDecimals(2)
+        self.ebay_fee_fixed.setMaximum(10.0)
+        self.ebay_fee_fixed.setValue(0.30)
+        fees_layout.addRow("eBay Fixed Fee:", self.ebay_fee_fixed)
+
+        self.payment_fee_percent = QDoubleSpinBox()
+        self.payment_fee_percent.setSuffix("%")
+        self.payment_fee_percent.setDecimals(2)
+        self.payment_fee_percent.setMaximum(15.0)
+        self.payment_fee_percent.setValue(2.90)
+        fees_layout.addRow("Payment Processing Fee:", self.payment_fee_percent)
+
+        self.payment_fee_fixed = QDoubleSpinBox()
+        self.payment_fee_fixed.setPrefix("$")
+        self.payment_fee_fixed.setDecimals(2)
+        self.payment_fee_fixed.setMaximum(10.0)
+        self.payment_fee_fixed.setValue(0.30)
+        fees_layout.addRow("Payment Fixed Fee:", self.payment_fee_fixed)
+
+        fees_info = QLabel(
+            "These fee rates are used by the pricing calculator when estimating profits."
+        )
+        fees_info.setStyleSheet("color: #666; font-size: 11px;")
+        fees_info.setWordWrap(True)
+        fees_layout.addRow("", fees_info)
+
+        fees_group.setLayout(fees_layout)
+        layout.addWidget(fees_group)
         
         # Display Settings
         display_group = QGroupBox("Display Settings")
@@ -365,9 +408,55 @@ class SettingsDialog(QDialog):
             
             # General settings
             self.category_input.setText(str(settings.get("default_category_id", "47140")))
-            self.income_tax_rate.setValue(int(settings.get("income_tax_rate", 22)))
+
+            income_rate = settings.get("income_tax_rate")
+            if income_rate is None:
+                stored_income = self.db.get_setting("income_tax_rate")
+                if stored_income not in (None, ""):
+                    try:
+                        income_rate = float(stored_income) * 100
+                    except (TypeError, ValueError):
+                        income_rate = None
+            try:
+                self.income_tax_rate.setValue(int(round(float(income_rate))))
+            except (TypeError, ValueError):
+                self.income_tax_rate.setValue(22)
+
+            se_tax_rate = settings.get("self_employment_tax_rate")
+            if se_tax_rate is None:
+                stored_se = self.db.get_setting("self_employment_tax_rate")
+                if stored_se not in (None, ""):
+                    try:
+                        se_tax_rate = float(stored_se) * 100
+                    except (TypeError, ValueError):
+                        se_tax_rate = None
+            try:
+                self.se_tax_rate.setValue(float(se_tax_rate))
+            except (TypeError, ValueError):
+                self.se_tax_rate.setValue(15.30)
+
+            def _load_fee_value(key, default, *, is_percent=False):
+                value = settings.get(key)
+                if value is None:
+                    stored = self.db.get_setting(key)
+                    if stored not in (None, ""):
+                        try:
+                            value = float(stored) * (100 if is_percent else 1)
+                        except (TypeError, ValueError):
+                            value = None
+                return value if value is not None else default
+
+            self.ebay_fee_percent.setValue(
+                float(_load_fee_value("ebay_fee_percent", 12.90, is_percent=True))
+            )
+            self.ebay_fee_fixed.setValue(float(_load_fee_value("ebay_fee_fixed", 0.30)))
+            self.payment_fee_percent.setValue(
+                float(_load_fee_value("payment_fee_percent", 2.90, is_percent=True))
+            )
+            self.payment_fee_fixed.setValue(float(_load_fee_value("payment_fee_fixed", 0.30)))
+
             self.compact_mode.setChecked(settings.get("compact_mode", False))
-            
+
         except Exception as e:
             print(f"Error loading settings: {e}")
     
@@ -404,6 +493,11 @@ class SettingsDialog(QDialog):
             # General settings
             settings["default_category_id"] = self.category_input.text().strip() or "47140"
             settings["income_tax_rate"] = self.income_tax_rate.value()
+            settings["self_employment_tax_rate"] = self.se_tax_rate.value()
+            settings["ebay_fee_percent"] = self.ebay_fee_percent.value()
+            settings["ebay_fee_fixed"] = self.ebay_fee_fixed.value()
+            settings["payment_fee_percent"] = self.payment_fee_percent.value()
+            settings["payment_fee_fixed"] = self.payment_fee_fixed.value()
             settings["compact_mode"] = self.compact_mode.isChecked()
             
             # Save to database
@@ -468,6 +562,11 @@ class SettingsDialog(QDialog):
                 # Reset general
                 self.category_input.setText("47140")
                 self.income_tax_rate.setValue(22)
+                self.se_tax_rate.setValue(15.30)
+                self.ebay_fee_percent.setValue(12.90)
+                self.ebay_fee_fixed.setValue(0.30)
+                self.payment_fee_percent.setValue(2.90)
+                self.payment_fee_fixed.setValue(0.30)
                 self.compact_mode.setChecked(False)
                 
                 QMessageBox.information(self, "Reset Complete", "All settings have been reset to defaults.")

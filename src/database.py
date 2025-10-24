@@ -711,6 +711,44 @@ class Database:
         self.cursor.execute("SELECT * FROM expenses WHERE id=?", (expense_id,))
         return self._row_to_dict(self.cursor.fetchone())
 
+    def get_expense_inventory_count(self, expense_id: int) -> int:
+        """Return how many inventory items are linked to an expense."""
+
+        try:
+            self.cursor.execute(
+                "SELECT COUNT(*) AS count FROM expense_inventory WHERE expense_id=?",
+                (expense_id,),
+            )
+            row = self.cursor.fetchone()
+            return int(row["count"]) if row else 0
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self.log_error("get_expense_inventory_count", str(exc))
+            return 0
+
+    def get_inventory_items_for_expense(self, expense_id: int) -> List[Dict[str, Any]]:
+        """Return inventory items linked to the given expense.
+
+        The expenses UI expects each entry to behave like a standard inventory
+        record with an additional ``allocated_amount`` key representing the
+        optional portion of the expense assigned to the item.
+        """
+
+        try:
+            self.cursor.execute(
+                """
+                SELECT i.*, ei.allocated_amount
+                FROM expense_inventory ei
+                JOIN inventory i ON ei.inventory_id = i.id
+                WHERE ei.expense_id=?
+                ORDER BY i.title COLLATE NOCASE, i.id DESC
+                """,
+                (expense_id,),
+            )
+            return self._rows_to_dicts(self.cursor.fetchall())
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self.log_error("get_inventory_items_for_expense", str(exc))
+            return []
+
     def get_sold_items(self, *args, **kwargs):
         """Return sold inventory items."""
         kwargs = dict(kwargs or {})
@@ -1641,6 +1679,83 @@ class Database:
         """Clear all error logs from the database."""
         self.cursor.execute("DELETE FROM error_logs")
         self.conn.commit()
+
+    def get_import_settings(self) -> Dict[str, Any]:
+        """Return structured application settings stored as JSON."""
+
+        try:
+            self.cursor.execute(
+                "SELECT value FROM settings WHERE key=?",
+                ("import_settings",),
+            )
+            row = self.cursor.fetchone()
+            if not row or row["value"] in (None, ""):
+                return {}
+            try:
+                data = json.loads(row["value"])
+            except (TypeError, json.JSONDecodeError):
+                self.log_error(
+                    "get_import_settings",
+                    "Stored import_settings could not be parsed as JSON",
+                )
+                return {}
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            self.log_error("get_import_settings", str(exc))
+            return {}
+
+    def update_import_settings(self, settings: Dict[str, Any]) -> None:
+        """Persist structured application settings and derived scalar values."""
+
+        payload = json.dumps(settings or {})
+        try:
+            self.cursor.execute(
+                """
+                INSERT INTO settings (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """,
+                ("import_settings", payload),
+            )
+            self.conn.commit()
+        except Exception as exc:
+            self.log_error("update_import_settings", str(exc))
+            raise
+
+        def _store_decimal(key: str, value: Any, *, is_percent: bool = False) -> None:
+            if value in (None, ""):
+                return
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return
+            if is_percent:
+                numeric /= 100.0
+            # Normalise representation to avoid lingering trailing zeros.
+            text = (f"{numeric:.6f}").rstrip("0").rstrip(".")
+            self.set_setting(key, text if text else "0")
+
+        # Persist commonly-used scalar values so other modules can read them
+        # without decoding the JSON payload each time.
+        _store_decimal("income_tax_rate", settings.get("income_tax_rate"), is_percent=True)
+        _store_decimal(
+            "self_employment_tax_rate",
+            settings.get("self_employment_tax_rate"),
+            is_percent=True,
+        )
+        _store_decimal("ebay_fee_percent", settings.get("ebay_fee_percent"), is_percent=True)
+        _store_decimal("ebay_fee_fixed", settings.get("ebay_fee_fixed"))
+        _store_decimal(
+            "payment_fee_percent", settings.get("payment_fee_percent"), is_percent=True
+        )
+        _store_decimal("payment_fee_fixed", settings.get("payment_fee_fixed"))
+        default_category = settings.get("default_category_id")
+        if default_category not in (None, ""):
+            self.set_setting("default_category_id", str(default_category))
+
+        compact_mode = settings.get("compact_mode")
+        if isinstance(compact_mode, bool):
+            self.set_setting("compact_mode", "1" if compact_mode else "0")
 
     def get_setting(self, key: str, default: str = None) -> Optional[str]:
         """Get a setting value by key.
